@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>ADHAMAR · Gestión interna</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="Sistema de gestión interna del spa ADHAMAR.">
+<meta name="robots" content="noindex, nofollow">
+
+<!-- Barra del navegador: claro y oscuro -->
+<meta name="theme-color" content="#FDFAF5" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0F0D0B" media="(prefers-color-scheme: dark)">
+
+<!-- PWA -->
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="favicon.png" sizes="any">
+<link rel="apple-touch-icon" href="icono-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="ADHAMAR">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+
+<!-- Hoja de estilos única (§1). Si no carga, la red de seguridad de abajo lo detecta. -->
+<link rel="stylesheet" href="styles.css" onerror="window.__fallo &amp;&amp; window.__fallo('estilos')">
+
+<!--
+  R9 — ESTILOS MÍNIMOS EN LÍNEA.
+  Solo cubren la pantalla de arranque y la de error de arranque.
+  Van aquí a propósito: si styles.css no carga, el mensaje de error
+  tiene que verse igual. Nunca una pantalla en blanco.
+-->
+<style>
+  :root{
+    --arr-fondo:#FDFAF5; --arr-superficie:#FFFFFF; --arr-texto:#1C1815;
+    --arr-medio:#5A5148; --arr-champagne:#C7A878; --arr-bronce:#7A5F34;
+    --arr-borde:#D9CDB8; --arr-error:#B3261E;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --arr-fondo:#0F0D0B; --arr-superficie:#1A1714; --arr-texto:#F5F0E8;
+      --arr-medio:#C3BCB1; --arr-champagne:#DEC08A; --arr-bronce:#DEC08A;
+      --arr-borde:#4A4238; --arr-error:#F2B8B5;
+    }
+  }
+  html,body{margin:0;padding:0;background:var(--arr-fondo);color:var(--arr-texto);}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;font-size:17px;}
+  #pantalla-arranque{
+    position:fixed;inset:0;z-index:9999;background:var(--arr-fondo);
+    display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:20px;padding:24px calc(24px + env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) calc(24px + env(safe-area-inset-left));
+    text-align:center;
+  }
+  #pantalla-arranque .marca{width:88px;height:106px;color:var(--arr-champagne);}
+  #pantalla-arranque .cargando{
+    font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    font-size:16px;text-transform:uppercase;letter-spacing:.08em;color:var(--arr-medio);margin:0;
+  }
+  #arranque-fallo{
+    display:none;max-width:520px;width:100%;text-align:left;
+    background:var(--arr-superficie);border:1px solid var(--arr-borde);
+    border-radius:16px;padding:22px;
+  }
+  #arranque-fallo h1{
+    font-family:ui-serif,"New York",Georgia,"Times New Roman",serif;
+    font-size:24px;font-weight:600;margin:0 0 10px;color:var(--arr-error);
+  }
+  #arranque-fallo p{margin:0 0 12px;color:var(--arr-texto);line-height:1.5;}
+  #arranque-fallo ol{margin:0 0 16px;padding-left:22px;color:var(--arr-medio);line-height:1.6;}
+  #arranque-fallo code{
+    font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Consolas,monospace;
+    background:rgba(199,168,120,.18);padding:1px 5px;border-radius:5px;font-size:15px;
+  }
+  #arranque-reintentar{
+    min-height:48px;width:100%;border:0;border-radius:12px;cursor:pointer;
+    background:var(--arr-bronce);color:#fff;font-size:17px;font-weight:600;
+    font-family:inherit;
+  }
+  #arranque-tecnico{margin-top:14px;color:var(--arr-medio);font-size:15px;}
+  #arranque-tecnico pre{
+    white-space:pre-wrap;word-break:break-word;font-size:13px;margin:8px 0 0;
+    color:var(--arr-medio);
+  }
+  .oculto{display:none !important;}
+</style>
+
+<!--
+  R9 — RED DE SEGURIDAD DE ARRANQUE.
+  Va ANTES de cualquier otro script. Detecta y muestra en pantalla:
+  falta config.js, config.js con valores de ejemplo, librería de Supabase
+  no cargada, error de JavaScript durante la carga y arranque colgado (8 s).
+-->
+<script>
+(function () {
+  var estado = { listo: false, mostrado: false, detalles: [] };
+  window.__arranque = estado;
+
+  function pintar(titulo, explicacion, pasos, tecnico) {
+    if (estado.mostrado) return;
+    estado.mostrado = true;
+    var caja = document.getElementById('arranque-fallo');
+    var cargando = document.querySelector('#pantalla-arranque .cargando');
+    if (!caja) { return; }
+    if (cargando) cargando.style.display = 'none';
+    document.getElementById('arranque-titulo').textContent = titulo;
+    document.getElementById('arranque-explicacion').textContent = explicacion;
+    var lista = document.getElementById('arranque-pasos');
+    lista.innerHTML = '';
+    (pasos || []).forEach(function (p) {
+      var li = document.createElement('li');
+      li.innerHTML = p;
+      lista.appendChild(li);
+    });
+    if (tecnico) {
+      var det = document.getElementById('arranque-tecnico');
+      det.classList.remove('oculto');
+      det.querySelector('pre').textContent = String(tecnico);
+    }
+    caja.style.display = 'block';
+  }
+  window.__arranqueFallo = pintar;
+
+  // Fallo al cargar una etiqueta concreta (styles.css, supabase, config.js)
+  window.__fallo = function (que) {
+    if (que === 'estilos') {
+      estado.detalles.push('No cargó styles.css');
+      return; // no es fatal: la app puede arrancar fea, pero arranca
+    }
+    if (que === 'supabase') {
+      pintar(
+        'No se pudo cargar la conexión con Supabase',
+        'La librería que comunica la aplicación con la base de datos no llegó a descargarse. Casi siempre es falta de internet.',
+        ['Revisa que el dispositivo tenga conexión.',
+         'Vuelve a intentarlo en unos segundos.',
+         'Si el problema sigue, comprueba que no haya un bloqueador de contenido activo en este navegador.']
+      );
+    }
+  };
+
+  window.addEventListener('error', function (e) {
+    if (estado.listo) return;
+    // Error al cargar un archivo (script/link) o error de JavaScript
+    var destino = e.target && e.target.tagName;
+    if (destino === 'SCRIPT' || destino === 'LINK') {
+      var ruta = e.target.src || e.target.href || '';
+      if (/styles\.css/.test(ruta)) { estado.detalles.push('No cargó styles.css'); return; }
+      // Un modulepreload que falla NO es fatal: es solo una descarga
+      // adelantada. Si ese módulo hace falta de verdad, app.js lo dirá
+      // por su nombre al intentar abrir la sección.
+      if (e.target.rel === 'modulepreload') {
+        estado.detalles.push('Falta ' + ruta.split('/').pop());
+        return;
+      }
+      pintar(
+        'Falta un archivo de la aplicación',
+        'El navegador no encontró un archivo que la aplicación necesita para funcionar.',
+        ['Comprueba que <code>' + ruta.split('/').pop() + '</code> esté subido al repositorio, al mismo nivel que <code>index.html</code>.',
+         'Recuerda que los archivos van todos sueltos, sin carpetas.'],
+        ruta
+      );
+      return;
+    }
+    pintar(
+      'La aplicación se detuvo al arrancar',
+      'Ocurrió un error mientras se cargaba la aplicación.',
+      ['Vuelve a intentarlo con el botón de abajo.',
+       'Si vuelve a fallar, avisa con el detalle técnico que aparece más abajo.'],
+      (e.message || '') + ' — ' + (e.filename || '') + ':' + (e.lineno || '')
+    );
+  }, true);
+
+  window.addEventListener('unhandledrejection', function (e) {
+    if (estado.listo) return;
+    pintar(
+      'La aplicación se detuvo al arrancar',
+      'Una operación falló durante la carga y nadie la atendió.',
+      ['Vuelve a intentarlo con el botón de abajo.'],
+      (e.reason && (e.reason.message || e.reason)) || ''
+    );
+  });
+
+  // Arranque colgado: 8 segundos sin señal de vida
+  setTimeout(function () {
+    if (estado.listo) return;
+    pintar(
+      'La aplicación no terminó de abrir',
+      'Pasaron 8 segundos y la aplicación sigue sin responder. Normalmente es un archivo que falta o una conexión muy lenta.',
+      ['Vuelve a intentarlo con el botón de abajo.',
+       'Comprueba que tengas internet.',
+       'Si acabas de subir cambios a GitHub, espera un minuto: la publicación tarda.'],
+      estado.detalles.join(' · ')
+    );
+  }, 8000);
+
+  // La llama app.js cuando ya pintó algo real en pantalla
+  window.__arranqueOK = function () {
+    estado.listo = true;
+    var p = document.getElementById('pantalla-arranque');
+    if (p) { p.style.opacity = '0'; setTimeout(function () { p.remove(); }, 220); }
+  };
+})();
+</script>
+</head>
+
+<body>
+
+<noscript>
+  <div style="padding:24px;max-width:520px;margin:0 auto">
+    <h1 style="font-family:Georgia,serif">Falta activar JavaScript</h1>
+    <p>Esta aplicación necesita JavaScript para funcionar. Actívalo en los ajustes del navegador y vuelve a abrirla.</p>
+  </div>
+</noscript>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     LOGOTIPO ADHAMAR (§2.2)
+     Silueta femenina RELLENA, sin trazos. El torso, la falda, los tres
+     botones y los dos huecos de la falda son un solo <path> con
+     fill-rule="evenodd": los huecos son espacio negativo real, así que
+     el logo funciona sobre cualquier fondo, no solo sobre blanco.
+     Se colorea con `color:` desde CSS (fill="currentColor").
+     ══════════════════════════════════════════════════════════════════ -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+
+    <!-- Versión completa -->
+    <symbol id="logo-adhamar" viewBox="0 0 200 250">
+      <g fill="currentColor">
+        <!-- Esfera del moño, separada del arco -->
+        <circle cx="100" cy="13" r="9"/>
+        <!-- Arco del moño -->
+        <path d="M74,52 A26,26 0 0 1 126,52 L116,52 A16,16 0 0 0 84,52 Z"/>
+        <!-- Cabeza -->
+        <circle cx="100" cy="66" r="19"/>
+        <!-- Aretes -->
+        <circle cx="73" cy="72" r="5"/>
+        <circle cx="127" cy="72" r="5"/>
+        <!-- Brazos abiertos, descendiendo en curva -->
+        <path d="M72,96 C46,106 26,136 20,166 L40,172 C46,144 58,120 80,110 Z"/>
+        <path d="M128,96 C154,106 174,136 180,166 L160,172 C154,144 142,120 120,110 Z"/>
+        <!-- Manos de extremo bulboso -->
+        <circle cx="30" cy="182" r="13"/>
+        <circle cx="170" cy="182" r="13"/>
+        <!-- Pies asomando bajo el borde -->
+        <ellipse cx="85" cy="228" rx="12" ry="9"/>
+        <ellipse cx="115" cy="228" rx="12" ry="9"/>
+        <!-- Torso y falda acampanada. La V del pecho, los tres botones y
+             los dos huecos ovalados son espacio negativo del mismo path. -->
+        <path fill-rule="evenodd" d="M70,103 C71,97 76,93 84,94 L100,112 L116,94
+          C124,93 129,97 130,103 L122,140 C134,168 145,196 152,216
+          C130,226 70,226 48,216 C55,196 66,168 78,140 Z
+          M100,124 a5,5 0 1,0 0.01,0 Z
+          M100,138 a5,5 0 1,0 0.01,0 Z
+          M100,152 a5,5 0 1,0 0.01,0 Z
+          M75,187 a7,20 0 1,0 0.01,0 Z
+          M125,187 a7,20 0 1,0 0.01,0 Z"/>
+      </g>
+    </symbol>
+
+    <!-- Versión simplificada obligatoria para ≤48px (favicon, pestaña).
+         Sin esfera separada del moño, sin aretes, sin botonadura,
+         huecos de la falda engrosados. Es otro icono, no el mismo escalado. -->
+    <symbol id="logo-adhamar-simple" viewBox="0 0 200 250">
+      <g fill="currentColor">
+        <path d="M72,54 A28,28 0 0 1 128,54 L116,54 A16,16 0 0 0 84,54 Z"/>
+        <circle cx="100" cy="68" r="22"/>
+        <path d="M70,98 C42,108 22,138 16,170 L40,177 C46,148 58,124 80,112 Z"/>
+        <path d="M130,98 C158,108 178,138 184,170 L160,177 C154,148 142,124 120,112 Z"/>
+        <circle cx="28" cy="188" r="15"/>
+        <circle cx="172" cy="188" r="15"/>
+        <ellipse cx="84" cy="230" rx="13" ry="10"/>
+        <ellipse cx="116" cy="230" rx="13" ry="10"/>
+        <path fill-rule="evenodd" d="M68,104 C70,96 78,92 100,92 C122,92 130,96 132,104
+          L122,142 C134,170 146,198 153,218 C130,228 70,228 47,218
+          C54,198 66,170 78,142 Z
+          M74,188 a10,22 0 1,0 0.01,0 Z
+          M126,188 a10,22 0 1,0 0.01,0 Z"/>
+      </g>
+    </symbol>
+
+    <!-- Iconos de navegación. Nunca van solos: siempre con etiqueta de texto (§2.4). -->
+    <symbol id="ic-agenda" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"/></symbol>
+    <symbol id="ic-mas" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="ic-historial" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h10"/></symbol>
+    <symbol id="ic-clientes" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM5 20c0-3.3 3.1-5.5 7-5.5s7 2.2 7 5.5"/></symbol>
+    <symbol id="ic-tarifario" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 5h16v14H4zM4 10h16M10 10v9"/></symbol>
+    <symbol id="ic-menu" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 7h16M4 12h16M4 17h16"/></symbol>
+    <symbol id="ic-candado" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 11h12v9H6zM9 11V8a3 3 0 0 1 6 0v3"/></symbol>
+    <symbol id="ic-cerrar" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></symbol>
+  </defs>
+</svg>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     PANTALLA DE ARRANQUE Y ERROR DE ARRANQUE (R9)
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="pantalla-arranque">
+  <svg class="marca" aria-hidden="true"><use href="#logo-adhamar"></use></svg>
+  <p class="cargando">Abriendo ADHAMAR…</p>
+
+  <div id="arranque-fallo" role="alert">
+    <h1 id="arranque-titulo"></h1>
+    <p id="arranque-explicacion"></p>
+    <ol id="arranque-pasos"></ol>
+    <button id="arranque-reintentar" type="button" onclick="location.reload()">Volver a intentar</button>
+    <div id="arranque-tecnico" class="oculto">
+      Detalle técnico (para quien instaló el sistema):
+      <pre></pre>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     NIVEL 1 — SESIÓN: correo y contraseña (§3.1, §3.3)
+     Solo se ve una vez por dispositivo.
+     ══════════════════════════════════════════════════════════════════ -->
+<section id="pantalla-login" class="pantalla-acceso" hidden>
+  <div class="acceso-caja">
+    <svg class="acceso-marca" aria-hidden="true"><use href="#logo-adhamar"></use></svg>
+    <h1 class="acceso-titulo">ADHAMAR</h1>
+    <p class="acceso-bajada">Gestión interna</p>
+
+    <form id="form-login" novalidate>
+      <label class="campo">
+        <span class="campo-etiqueta">Correo</span>
+        <input id="login-correo" name="correo" type="email" inputmode="email"
+               autocomplete="username" autocapitalize="none" spellcheck="false" required>
+      </label>
+
+      <label class="campo">
+        <span class="campo-etiqueta">Contraseña</span>
+        <input id="login-clave" name="clave" type="password" autocomplete="current-password" required>
+      </label>
+
+      <label class="campo">
+        <span class="campo-etiqueta">Nombre de este dispositivo</span>
+        <input id="login-dispositivo" name="dispositivo" type="text" autocomplete="off"
+               placeholder="Celular de Dhamar" required>
+        <span class="campo-ayuda">Sirve para reconocerlo después y poder revocarlo desde otro equipo.</span>
+      </label>
+
+      <p id="login-error" class="mensaje-error" role="alert" hidden></p>
+
+      <button id="login-entrar" class="boton-primario" type="submit">Entrar</button>
+    </form>
+
+    <p class="acceso-nota">
+      Solo tendrás que escribir la contraseña esta vez en este dispositivo.
+      Después entrarás con tu PIN.
+    </p>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     PIN: creación tras el primer ingreso en un dispositivo (§3.4)
+     ══════════════════════════════════════════════════════════════════ -->
+<section id="pantalla-pin-nuevo" class="pantalla-acceso" hidden>
+  <div class="acceso-caja">
+    <svg class="acceso-marca" aria-hidden="true"><use href="#logo-adhamar"></use></svg>
+    <h1 class="acceso-titulo">Crea tu PIN</h1>
+    <p class="acceso-bajada">Cuatro dígitos. Lo usarás para desbloquear la aplicación.</p>
+
+    <form id="form-pin-nuevo" novalidate>
+      <label class="campo">
+        <span class="campo-etiqueta">PIN nuevo</span>
+        <input id="pin-nuevo" type="password" inputmode="numeric" pattern="[0-9]*"
+               maxlength="4" autocomplete="new-password" class="campo-pin" required>
+      </label>
+      <label class="campo">
+        <span class="campo-etiqueta">Repite el PIN</span>
+        <input id="pin-nuevo-repetir" type="password" inputmode="numeric" pattern="[0-9]*"
+               maxlength="4" autocomplete="new-password" class="campo-pin" required>
+      </label>
+      <p id="pin-nuevo-error" class="mensaje-error" role="alert" hidden></p>
+      <button class="boton-primario" type="submit">Guardar PIN</button>
+    </form>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     NIVEL 2 — BLOQUEO POR INACTIVIDAD (§3.5)
+     ══════════════════════════════════════════════════════════════════ -->
+<section id="pantalla-bloqueo" class="pantalla-acceso" hidden>
+  <div class="acceso-caja">
+    <svg class="acceso-marca" aria-hidden="true"><use href="#logo-adhamar"></use></svg>
+    <h1 class="acceso-titulo">Aplicación bloqueada</h1>
+    <p class="acceso-bajada">Ingresa tu PIN para continuar</p>
+    <p id="bloqueo-usuario" class="acceso-usuario"></p>
+
+    <form id="form-bloqueo" novalidate>
+      <label class="campo">
+        <span class="campo-etiqueta">PIN</span>
+        <input id="bloqueo-pin" type="password" inputmode="numeric" pattern="[0-9]*"
+               maxlength="4" autocomplete="off" class="campo-pin" required>
+      </label>
+      <p id="bloqueo-error" class="mensaje-error" role="alert" hidden></p>
+      <button class="boton-primario" type="submit">Desbloquear</button>
+    </form>
+
+    <div class="acceso-enlaces">
+      <button type="button" class="boton-enlace" id="bloqueo-olvide">¿Olvidaste tu PIN?</button>
+      <button type="button" class="boton-enlace" id="bloqueo-cambiar-usuario">Cambiar de usuario</button>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     APLICACIÓN
+     ══════════════════════════════════════════════════════════════════ -->
+<div id="app" class="app" hidden>
+
+  <!-- Cabecera -->
+  <header class="cabecera">
+    <button id="btn-menu" class="boton-icono solo-movil" type="button" aria-label="Abrir menú" aria-expanded="false" aria-controls="menu">
+      <svg aria-hidden="true"><use href="#ic-menu"></use></svg>
+    </button>
+
+    <a class="cabecera-marca" href="#agenda">
+      <svg class="cabecera-logo" aria-hidden="true"><use href="#logo-adhamar"></use></svg>
+      <span class="cabecera-nombre">ADHAMAR</span>
+    </a>
+
+    <div class="cabecera-derecha">
+      <!-- Estado de conexión (§7). Nunca finge que algo se guardó. -->
+      <p id="estado-conexion" class="estado-conexion" data-estado="conectado" role="status">
+        <span class="estado-punto" aria-hidden="true"></span>
+        <span class="estado-texto">Conectado</span>
+      </p>
+
+      <div class="cabecera-usuario">
+        <span id="usuario-nombre" class="usuario-nombre"></span>
+        <span id="usuario-rol" class="etiqueta-rol"></span>
+      </div>
+
+      <button id="btn-bloquear" class="boton-icono" type="button" aria-label="Bloquear ahora" title="Bloquear ahora">
+        <svg aria-hidden="true"><use href="#ic-candado"></use></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- Menú lateral (escritorio) / cajón (móvil).
+       Los elementos con data-rol="admin" los oculta acceso.js según el rol.
+       La barrera real está en las policies de Supabase, no aquí (§3.2). -->
+  <nav id="menu" class="menu" aria-label="Secciones">
+    <button class="menu-item" data-vista="agenda" type="button">
+      <svg aria-hidden="true"><use href="#ic-agenda"></use></svg><span>Agenda del día</span>
+    </button>
+    <button class="menu-item menu-item-destacado" data-vista="registro" type="button">
+      <svg aria-hidden="true"><use href="#ic-mas"></use></svg><span>Registrar servicio</span>
+    </button>
+    <button class="menu-item" data-vista="historial" type="button">
+      <svg aria-hidden="true"><use href="#ic-historial"></use></svg><span>Historial</span>
+    </button>
+    <button class="menu-item" data-vista="clientes" type="button">
+      <svg aria-hidden="true"><use href="#ic-clientes"></use></svg><span>Clientes</span>
+    </button>
+    <button class="menu-item" data-vista="tarifario" type="button">
+      <svg aria-hidden="true"><use href="#ic-tarifario"></use></svg><span>Tarifario</span>
+    </button>
+    <button class="menu-item" data-vista="asistencia" type="button"><span>Asistencia</span></button>
+
+    <p class="menu-separador" data-rol="admin">Administración</p>
+    <button class="menu-item" data-vista="servicios"   data-rol="admin" type="button"><span>Servicios y precios</span></button>
+    <button class="menu-item" data-vista="masajistas"  data-rol="admin" type="button"><span>Masajistas</span></button>
+    <button class="menu-item" data-vista="resumen"     data-rol="admin" type="button"><span>Resumen</span></button>
+    <button class="menu-item" data-vista="caja"        data-rol="admin" type="button"><span>Caja</span></button>
+    <button class="menu-item" data-vista="reportes"    data-rol="admin" type="button"><span>Reportes</span></button>
+    <button class="menu-item" data-vista="usuarios"    data-rol="admin" type="button"><span>Usuarios y dispositivos</span></button>
+    <button class="menu-item" data-vista="auditoria"   data-rol="admin" type="button"><span>Auditoría</span></button>
+
+    <p class="menu-separador">&nbsp;</p>
+    <button class="menu-item" data-vista="configuracion" type="button"><span>Configuración</span></button>
+  </nav>
+  <div id="menu-fondo" class="menu-fondo" hidden></div>
+
+  <!-- Aquí montan su contenido los módulos de vista. -->
+  <main id="vista" class="vista" tabindex="-1">
+    <!-- Esqueleto inicial: nunca una rueda giratoria (§2.5) -->
+    <div class="esqueleto-pantalla" aria-hidden="true">
+      <div class="esqueleto esqueleto-titulo"></div>
+      <div class="esqueleto esqueleto-fila"></div>
+      <div class="esqueleto esqueleto-fila"></div>
+      <div class="esqueleto esqueleto-fila"></div>
+      <div class="esqueleto esqueleto-fila"></div>
+    </div>
+  </main>
+
+  <!-- Botón flotante: registrar servicio es lo más accesible de la interfaz (§5) -->
+  <button id="fab-registrar" class="fab" type="button" data-vista="registro">
+    <svg aria-hidden="true"><use href="#ic-mas"></use></svg>
+    <span>Registrar</span>
+  </button>
+
+  <!-- Barra inferior (móvil). Iconos siempre con etiqueta. -->
+  <nav class="barra-inferior solo-movil" aria-label="Accesos rápidos">
+    <button class="barra-item" data-vista="agenda" type="button">
+      <svg aria-hidden="true"><use href="#ic-agenda"></use></svg><span>Agenda</span>
+    </button>
+    <button class="barra-item" data-vista="historial" type="button">
+      <svg aria-hidden="true"><use href="#ic-historial"></use></svg><span>Historial</span>
+    </button>
+    <button class="barra-item" data-vista="clientes" type="button">
+      <svg aria-hidden="true"><use href="#ic-clientes"></use></svg><span>Clientes</span>
+    </button>
+    <button class="barra-item" data-vista="tarifario" type="button">
+      <svg aria-hidden="true"><use href="#ic-tarifario"></use></svg><span>Tarifario</span>
+    </button>
+    <button class="barra-item" id="barra-mas" type="button">
+      <svg aria-hidden="true"><use href="#ic-menu"></use></svg><span>Más</span>
+    </button>
+  </nav>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     PIEZAS COMPARTIDAS DE INTERFAZ (las maneja ui.js)
+     R16: nada de alert(), confirm() ni prompt().
+     ══════════════════════════════════════════════════════════════════ -->
+
+<!-- Hoja inferior en móvil / panel lateral en escritorio -->
+<div id="capa-hoja" class="capa" hidden>
+  <div class="capa-fondo" data-cerrar-hoja></div>
+  <section class="hoja" role="dialog" aria-modal="true" aria-labelledby="hoja-titulo">
+    <div class="hoja-agarre" aria-hidden="true"></div>
+    <header class="hoja-cabecera">
+      <h2 id="hoja-titulo" class="hoja-titulo"></h2>
+      <button class="boton-icono" type="button" data-cerrar-hoja aria-label="Cerrar">
+        <svg aria-hidden="true"><use href="#ic-cerrar"></use></svg>
+      </button>
+    </header>
+    <div id="hoja-cuerpo" class="hoja-cuerpo"></div>
+    <footer id="hoja-pie" class="hoja-pie"></footer>
+  </section>
+</div>
+
+<!-- Confirmaciones y avisos -->
+<div id="capa-dialogo" class="capa" hidden>
+  <div class="capa-fondo" data-cerrar-dialogo></div>
+  <section class="dialogo" role="alertdialog" aria-modal="true" aria-labelledby="dialogo-titulo" aria-describedby="dialogo-texto">
+    <h2 id="dialogo-titulo" class="dialogo-titulo"></h2>
+    <p id="dialogo-texto" class="dialogo-texto"></p>
+    <div id="dialogo-extra" class="dialogo-extra"></div>
+    <div class="dialogo-acciones">
+      <button id="dialogo-cancelar" class="boton-secundario" type="button">Cancelar</button>
+      <button id="dialogo-aceptar" class="boton-primario" type="button">Aceptar</button>
+    </div>
+  </section>
+</div>
+
+<!-- Confirmaciones de guardado: imposibles de no ver (§2.4) -->
+<div id="avisos" class="avisos" role="status" aria-live="polite"></div>
+
+<!-- Plantillas reutilizables -->
+<template id="tpl-esqueleto-fila">
+  <div class="esqueleto esqueleto-fila" aria-hidden="true"></div>
+</template>
+
+<template id="tpl-sugerencias">
+  <!-- Autocompletado predictivo (§5.5). "Crear nuevo" siempre al final. -->
+  <ul class="sugerencias" role="listbox"></ul>
+</template>
+
+<template id="tpl-vacio">
+  <div class="vacio">
+    <p class="vacio-titulo"></p>
+    <p class="vacio-texto"></p>
+  </div>
+</template>
+
+<!-- ══════════════════════════════════════════════════════════════════
+     CARGA DE ARCHIVOS
+     Estructura plana: todo al mismo nivel, sin carpetas (§1).
+     ══════════════════════════════════════════════════════════════════ -->
+
+<!-- 1) Librería de Supabase -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"
+        onerror="window.__fallo('supabase')"></script>
+
+<!-- 2) El ÚNICO archivo que se edita a mano: URL y anon key -->
+<script src="config.js"></script>
+
+<!-- 3) R8/R9 — comprobación de que lo anterior llegó bien.
+        Sin esto, olvidar config.js deja el logo girando para siempre. -->
+<script>
+(function () {
+  if (typeof window.supabase === 'undefined' || !window.supabase.createClient) {
+    window.__arranqueFallo(
+      'No se pudo cargar la conexión con Supabase',
+      'La librería que comunica la aplicación con la base de datos no está disponible.',
+      ['Revisa que el dispositivo tenga internet.',
+       'Vuelve a intentarlo con el botón de abajo.']
+    );
+    return;
+  }
+  var c = window.CONFIG_ADHAMAR;
+  if (!c) {
+    window.__arranqueFallo(
+      'Falta el archivo de configuración',
+      'La aplicación no encontró <code>config.js</code>, que es donde están la dirección y la clave de la base de datos.',
+      ['Comprueba que <code>config.js</code> esté subido al repositorio.',
+       'Tiene que estar al mismo nivel que <code>index.html</code>, no dentro de una carpeta.',
+       'El nombre va en minúsculas, exactamente <code>config.js</code>.']
+    );
+    return;
+  }
+  var urlOk  = typeof c.url === 'string' && /^https:\/\/.+\.supabase\.co\/?$/.test(c.url.trim());
+  var claveOk = typeof c.anonKey === 'string' && c.anonKey.trim().length > 40;
+  var ejemplo = /PEGA_AQUI|TU_PROYECTO|TU-PROYECTO|xxxxx/i.test((c.url || '') + (c.anonKey || ''));
+  if (!urlOk || !claveOk || ejemplo) {
+    window.__arranqueFallo(
+      'Falta configurar la base de datos',
+      'El archivo <code>config.js</code> todavía tiene los valores de ejemplo, o están incompletos.',
+      ['Entra a tu proyecto de Supabase.',
+       'Ve a <code>Project Settings → API Keys</code>.',
+       'Copia la <b>Project URL</b> y la clave <b>anon / publishable</b>.',
+       'Pégalas en <code>config.js</code>, entre comillas, y vuelve a subir el archivo.']
+    );
+    return;
+  }
+})();
+</script>
+
+<!--
+  4) Módulos de la aplicación.
+     app.js es el único punto de entrada; los demás se importan desde él.
+     Los `modulepreload` cumplen dos funciones: adelantan la descarga y
+     dejan escrita, en un solo lugar, la lista completa de archivos que
+     el sistema necesita. Si uno falta, la red de seguridad lo dice por
+     su nombre en vez de dejar la pantalla en blanco (R8).
+-->
+<link rel="modulepreload" href="core.js">
+<link rel="modulepreload" href="formato.js">
+<link rel="modulepreload" href="ui.js">
+<link rel="modulepreload" href="datos.js">
+<link rel="modulepreload" href="acceso.js">
+<link rel="modulepreload" href="buscador.js">
+<link rel="modulepreload" href="realtime.js">
+<link rel="modulepreload" href="agenda.js">
+<link rel="modulepreload" href="registro.js">
+<link rel="modulepreload" href="historial.js">
+<link rel="modulepreload" href="clientes.js">
+<link rel="modulepreload" href="catalogo.js">
+<link rel="modulepreload" href="equipo.js">
+<link rel="modulepreload" href="caja.js">
+<link rel="modulepreload" href="reportes.js">
+<link rel="modulepreload" href="admin.js">
+
+<script type="module" src="app.js"></script>
+
+<!-- 5) Service worker: cachea solo el armazón, nunca datos de Supabase (§1) -->
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker.register('sw.js').catch(function (e) {
+        console.warn('El service worker no se registró:', e);
+      });
+    });
+  }
+</script>
+
+</body>
+</html>
