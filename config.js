@@ -23,8 +23,8 @@ window.CONFIG_ADHAMAR = {
 
   /* ── Obligatorio: reemplaza los dos valores de ejemplo ────────────── */
 
-  url:     "https://ersqxkcebecoxdgsvklx.supabase.co",
-  anonKey: "sb_publishable_AFArHIYA-pDQzxXJtOyLmA_6Y0sqxfX",
+NEXT_PUBLIC_SUPABASE_URL=https://ersqxkcebecoxdgsvklx.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_AFArHIYA-pDQzxXJtOyLmA_6Y0sqxfX,
 
   /* ── Opcional: ajustes con los que arranca el sistema ─────────────── */
 
