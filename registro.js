@@ -75,6 +75,8 @@ export async function formularioServicio(reg, fecha, alGuardar) {
   const editando = !!reg;
   const cuerpo = abrirHoja(editando ? 'Completar atención' : 'Registrar servicio', `
     <div id="f-cliente"></div>
+    <div class="campo oculto" id="f-tipo-caja"><span>Tipo de servicio</span>
+      <div class="segmentos" id="f-tipo"></div></div>
     <div id="f-masaje"></div>
     <div id="f-combinaciones"></div>
     <div id="f-tarifa"></div>
@@ -83,10 +85,14 @@ export async function formularioServicio(reg, fecha, alGuardar) {
       <input type="time" id="f-hora" value="${reg?.hora_ingreso?.slice(0,5) || horaAhora()}"></label>
     <p class="ayuda" id="f-termina" style="margin:-10px 0 18px"></p>
 
-    <div id="f-masajista"></div>
-    <label class="casilla"><input type="checkbox" id="f-varias">
-      <span>Más de una masajista</span></label>
-    <div id="f-extras"></div>
+    <div id="f-bloque-masajistas">
+      <div id="f-masajista"></div>
+      <label class="casilla"><input type="checkbox" id="f-varias">
+        <span>Más de una masajista</span></label>
+      <div id="f-extras"></div>
+    </div>
+    <p class="ayuda oculto" id="f-sin-masajista" style="margin:-4px 0 18px">
+      El sauna no lleva masajista: es ingreso del spa.</p>
 
     <div id="f-pago"></div>
 
@@ -104,6 +110,7 @@ export async function formularioServicio(reg, fecha, alGuardar) {
     </details>
 
     <p class="error" id="f-error" hidden></p>
+    <div id="f-aviso"></div>
     <div class="barra-acciones" style="margin:0">
       <button class="btn btn--neutro" id="f-reserva" style="flex:1">Guardar como reserva</button>
       <button class="btn btn--principal" id="f-atendido" style="flex:1.3">Guardar atención</button>
@@ -125,23 +132,34 @@ export async function formularioServicio(reg, fecha, alGuardar) {
   let cliente   = reg?.cliente
     || (reg?.cliente_texto ? { id: null, nombre: reg.cliente_texto, __texto: true } : null);
   let todos     = [];
+  // Tipo de servicio: masaje, paquete (masaje + sauna) o sauna sola.
+  let tipo       = servicio?.tipo || reg?.tipo_servicio || 'masaje';
+  let saunaOrden = reg?.sauna_orden || null;
 
   const el = s => cuerpo.querySelector(s);
 
   // === 1. Masaje (autocompletado) ==========================================
-  autocompletar({
+  const bMasaje = autocompletar({
     contenedor: el('#f-masaje'),
     etiqueta: 'Masaje', requerido: true,
     valorInicial: masaje ? { masaje } : null,
+    // Se busca entre los servicios del TIPO elegido (masaje o paquete).
     buscar: async t => {
-      const r = await D.buscarServicios(t);
+      if (!todos.length) todos = await D.servicios(true);
+      const q = normalizar(t);
       const vistos = new Set();
-      return r.filter(s => !vistos.has(s.masaje) && vistos.add(s.masaje))
-              .map(s => ({ masaje: s.masaje }));
+      return todos
+        .filter(s => s.tipo === tipo && s.masaje && normalizar(s.masaje).includes(q))
+        .filter(s => !vistos.has(s.masaje) && vistos.add(s.masaje))
+        .map(s => ({ masaje: s.masaje }));
     },
     pintar: m => ({ titulo: m.masaje }),
     alElegir: async m => {
-      masaje = m?.masaje || null;
+      // Al abrir una reserva el campo se rellena solo: si el masaje no cambió,
+      // se conserva el tiempo ya elegido (antes se perdía).
+      const nuevo = m?.masaje || null;
+      if (nuevo === masaje && servicio) return;
+      masaje = nuevo;
       servicio = null;
       await pintarCombinaciones();
       pintarTarifa();
@@ -153,27 +171,48 @@ export async function formularioServicio(reg, fecha, alGuardar) {
   // deshabilitadas ni celdas vacías.
   async function pintarCombinaciones() {
     const caja = el('#f-combinaciones');
-    if (!masaje) { caja.innerHTML = ''; return; }
-
     if (!todos.length) todos = await D.servicios(true);
-    const propios = todos.filter(s => s.masaje === masaje);
-    if (!propios.length) { caja.innerHTML = '<p class="ayuda">Este masaje no tiene precios cargados.</p>'; return; }
 
-    const porModalidad = {};
-    propios.forEach(s => (porModalidad[s.modalidad] ||= []).push(s));
+    let propios;
+    if (tipo === 'sauna') {
+      propios = todos.filter(s => s.tipo === 'sauna');
+      if (!propios.length) { caja.innerHTML = '<p class="ayuda">El sauna todavía no tiene precio cargado (Servicios).</p>'; return; }
+      // Normalmente hay una sola opción (30'): se elige sola.
+      if (!servicio && propios.length === 1) servicio = propios[0];
+    } else {
+      if (!masaje) { caja.innerHTML = ''; return; }
+      propios = todos.filter(s => s.tipo === tipo && s.masaje === masaje);
+      if (!propios.length) {
+        caja.innerHTML = `<p class="ayuda">${tipo === 'paquete'
+          ? 'Este masaje no tiene paquete con sauna.' : 'Este masaje no tiene precios cargados.'}</p>`;
+        return;
+      }
+    }
 
-    caja.innerHTML = `<p class="eyebrow" style="margin-bottom:10px">Modalidad y tiempo</p>` +
-      Object.entries(porModalidad).map(([mod, lista]) => `
+    const grupos = {};
+    propios.forEach(s => (grupos[tipo === 'sauna' ? 'Sauna' : s.modalidad] ||= []).push(s));
+    const minutos = s => tipo === 'sauna' ? s.sauna_minutos : s.duracion;
+
+    caja.innerHTML = `<p class="eyebrow" style="margin-bottom:10px">${
+        tipo === 'sauna' ? 'Tiempo de sauna' : tipo === 'paquete' ? 'Modalidad y tiempo del masaje' : 'Modalidad y tiempo'}</p>` +
+      Object.entries(grupos).map(([grupo, lista]) => `
         <div class="grupo-modalidad">
-          <span>${escapar(mod)}${lista[0].terapeutas_requeridas > 1 ? ' · 2 srtas' : ''}</span>
+          <span>${escapar(grupo)}${tipo === 'paquete' ? ` + sauna ${lista[0].sauna_minutos}'` : ''}${
+            lista[0].terapeutas_requeridas > 1 ? ' · 2 srtas' : ''}</span>
           <div class="duraciones">
-            ${lista.sort((a,b) => a.duracion - b.duracion).map(s => `
+            ${lista.sort((a, b) => minutos(a) - minutos(b)).map(s => `
               <button type="button" class="duracion${servicio?.id === s.id ? ' elegida' : ''}"
                       data-id="${s.id}">
-                <strong>${s.duracion}'</strong><small>${monto(s.precio_referencial)}</small>
+                <strong>${minutos(s)}'</strong><small>${monto(s.precio_referencial)}</small>
               </button>`).join('')}
           </div>
-        </div>`).join('');
+        </div>`).join('') +
+      (tipo === 'paquete' ? `
+        <div class="campo" style="margin-top:4px"><span>El sauna va</span>
+          <div class="segmentos" id="f-orden">
+            <button type="button" data-orden="antes" class="${saunaOrden === 'antes' ? 'activo' : ''}">Antes del masaje</button>
+            <button type="button" data-orden="despues" class="${saunaOrden === 'despues' ? 'activo' : ''}">Después del masaje</button>
+          </div></div>` : '');
 
     caja.querySelectorAll('.duracion').forEach(b => b.onclick = () => {
       servicio = propios.find(s => s.id === b.dataset.id);
@@ -185,6 +224,49 @@ export async function formularioServicio(reg, fecha, alGuardar) {
         el('#f-varias').checked = true; pintarExtras();
       }
     });
+    caja.querySelectorAll('[data-orden]').forEach(b => b.onclick = () => {
+      saunaOrden = b.dataset.orden;
+      caja.querySelectorAll('[data-orden]').forEach(x => x.classList.toggle('activo', x === b));
+      actualizarTermina();
+    });
+  }
+
+  // Precio del masaje solo (misma modalidad y tiempo): es lo que se le cuenta
+  // a la masajista en un paquete. El resto del paquete es del spa.
+  const masajeSolo = s => todos.find(x => x.tipo === 'masaje' && x.masaje === s.masaje
+    && x.modalidad === s.modalidad && x.duracion === s.duracion);
+
+  // --- Tipo de servicio ----------------------------------------------------
+  function pintarTipo() {
+    const hay = t => t === tipo || todos.some(s => s.tipo === t);
+    const opciones = [['masaje', 'Masaje'], ['paquete', 'Masaje + sauna'], ['sauna', 'Sauna']]
+      .filter(([t]) => hay(t));
+    el('#f-tipo-caja').classList.toggle('oculto', opciones.length < 2);
+    el('#f-tipo').innerHTML = opciones.map(([t, txt]) =>
+      `<button type="button" data-tipo="${t}" class="${t === tipo ? 'activo' : ''}">${txt}</button>`).join('');
+    el('#f-tipo').querySelectorAll('[data-tipo]').forEach(b => b.onclick = () => cambiarTipo(b.dataset.tipo));
+    aplicarTipo();
+  }
+
+  async function cambiarTipo(nuevo) {
+    if (nuevo === tipo) return;
+    tipo = nuevo;
+    servicio = null;
+    // Se conserva el masaje si también existe en el tipo nuevo.
+    if (tipo === 'sauna' || (masaje && !todos.some(s => s.tipo === tipo && s.masaje === masaje))) {
+      masaje = null; bMasaje.limpiar();
+    }
+    el('#f-tipo').querySelectorAll('[data-tipo]').forEach(b => b.classList.toggle('activo', b.dataset.tipo === tipo));
+    aplicarTipo();
+    await pintarCombinaciones();
+    pintarTarifa();
+  }
+
+  function aplicarTipo() {
+    const sauna = tipo === 'sauna';
+    el('#f-masaje').classList.toggle('oculto', sauna);
+    el('#f-bloque-masajistas').classList.toggle('oculto', sauna);
+    el('#f-sin-masajista').classList.toggle('oculto', !sauna);
   }
 
   // === 3. Tarifa referencial y precio a cobrar ============================
@@ -205,7 +287,8 @@ export async function formularioServicio(reg, fecha, alGuardar) {
       <label class="campo campo--monto"><span>Precio a cobrar</span>
         <input type="number" id="f-cobrado" inputmode="decimal" step="0.5" min="0"
                value="${actual ?? (reg?.precio_cobrado ?? ref)}"></label>
-      <p class="ayuda" style="margin:-10px 0 18px">La tarifa es solo una referencia. Puedes cobrar más o menos.</p>`;
+      <p class="ayuda" style="margin:-10px 0 18px">La tarifa es solo una referencia. Puedes cobrar más o menos.</p>
+      <p class="ayuda" id="f-reparto" style="margin:-10px 0 18px"></p>`;
 
     el('#f-cobrado').addEventListener('input', calcular);
     calcular();
@@ -223,6 +306,16 @@ export async function formularioServicio(reg, fecha, alGuardar) {
     const linea = el('#f-linea-desc');
 
     el('#f-cobrado-eco').textContent = monto(cob);
+    const rep = el('#f-reparto');
+    if (tipo === 'paquete') {
+      const solo = masajeSolo(servicio);
+      const mas = solo ? Math.min(cob, numero(solo.precio_referencial)) : cob;
+      rep.textContent = solo
+        ? `Para la masajista se cuenta ${monto(mas)} (masaje solo). Para el spa, por el sauna: ${monto(cob - mas)}.`
+        : 'Este masaje no tiene precio solo: todo el paquete se contará a la masajista.';
+    } else if (tipo === 'sauna') {
+      rep.textContent = 'Todo es ingreso del spa.';
+    } else rep.textContent = '';
     if (desc > 0)      { linea.classList.remove('oculto'); el('#f-desc-etq').textContent = 'Descuento';
                          el('#f-desc-val').textContent = '−' + monto(desc); }
     else if (aju > 0)  { linea.classList.remove('oculto'); el('#f-desc-etq').textContent = 'Ajuste';
@@ -232,11 +325,26 @@ export async function formularioServicio(reg, fecha, alGuardar) {
     pintarPago();
   }
 
+  // Minutos entre el ingreso y el inicio del MASAJE (sauna primero = sus minutos).
+  const desfaseMasaje = () =>
+    tipo === 'paquete' && saunaOrden === 'antes' ? (servicio?.sauna_minutos || 0) : 0;
+  // Minutos entre el ingreso y el inicio del SAUNA.
+  const desfaseSauna = () =>
+    tipo === 'paquete' && saunaOrden === 'despues' ? (servicio?.duracion || 0) : 0;
+  const minutosTotales = () => !servicio ? 0
+    : tipo === 'sauna' ? servicio.sauna_minutos
+    : servicio.duracion + (tipo === 'paquete' ? servicio.sauna_minutos : 0);
+
   function actualizarTermina() {
     const h = el('#f-hora').value;
-    el('#f-termina').textContent = (servicio && h)
-      ? `Ingreso ${hora12(h)} · ${servicio.duracion}' → termina ~${hora12(sumarMinutos(h, servicio.duracion))}`
-      : '';
+    if (!servicio || !h) { el('#f-termina').textContent = ''; return; }
+    const detalle = tipo === 'sauna' ? `sauna ${servicio.sauna_minutos}'`
+      : tipo === 'paquete'
+        ? (saunaOrden === 'despues' ? `masaje ${servicio.duracion}' + sauna ${servicio.sauna_minutos}'`
+                                    : `sauna ${servicio.sauna_minutos}' + masaje ${servicio.duracion}'`)
+        : `${servicio.duracion}'`;
+    el('#f-termina').textContent =
+      `Ingreso ${hora12(h)} · ${detalle} → termina ~${hora12(sumarMinutos(h, minutosTotales()))}`;
   }
   el('#f-hora').addEventListener('input', actualizarTermina);
 
@@ -353,7 +461,7 @@ export async function formularioServicio(reg, fecha, alGuardar) {
   if (reg?.motivo_descuento) el('#f-motivo').value = reg.motivo_descuento;
 
   // === 7. Guardar ==========================================================
-  const listaMasajistas = () =>
+  const listaMasajistas = () => tipo === 'sauna' ? [] :
     [bPrincipal.valor(), ...extras].filter(Boolean).map(m => m.id)
       .filter((id, i, a) => a.indexOf(id) === i);
 
@@ -372,7 +480,8 @@ export async function formularioServicio(reg, fecha, alGuardar) {
       forma_pago: el('#f-forma').value || null,
       dinero_recibido: el('#f-recibido') ? (numero(el('#f-recibido').value) || null) : null,
       vuelto_metodo: el('#f-vuelto-via')?.value || null,
-      notas: el('#f-notas').value || null
+      notas: el('#f-notas').value || null,
+      sauna_orden: tipo === 'paquete' ? saunaOrden : null
     };
   }
 
@@ -383,31 +492,47 @@ export async function formularioServicio(reg, fecha, alGuardar) {
 
     if (destino === 'atendido') {
       // Aquí sí se exigen los datos mínimos, con mensajes en lenguaje humano.
-      if (!servicio)   return fallo('Falta elegir el masaje y el tiempo.');
-      if (!ms.length)  return fallo('Falta elegir la masajista.');
+      if (!servicio) return fallo(tipo === 'sauna' ? 'Falta elegir el sauna.' : 'Falta elegir el masaje y el tiempo.');
+      if (tipo !== 'sauna' && !ms.length) return fallo('Falta elegir la masajista.');
+      if (tipo === 'paquete' && !saunaOrden) return fallo('Indica si el sauna va antes o después del masaje.');
       const cob = numero(el('#f-cobrado').value);
       if (!(cob >= 0)) return fallo('Escribe cuánto se cobró.');
       const forma = el('#f-forma').value;
       if (forma === 'efectivo' && el('#f-recibido').value &&
           numero(el('#f-recibido').value) < cob)
         return fallo('El monto recibido es insuficiente.');
+    }
 
-      // Aviso de cruce de horarios: advierte, no bloquea.
-      if (el('#f-hora').value && ms.length) {
-        try {
-          const choques = await D.avisoSolapamiento(ms, fecha, el('#f-hora').value,
-                                                    servicio.duracion, reg?.id || null);
+    // Avisos de cruce de horarios: advierten, no bloquean.
+    // Se preguntan DENTRO del formulario para no perder lo escrito.
+    const h = el('#f-hora').value;
+    if (h && servicio) {
+      try {
+        if (tipo !== 'sauna' && ms.length) {
+          const choques = await D.avisoSolapamiento(ms, fecha, h, servicio.duracion,
+                                                    reg?.id || null, desfaseMasaje());
           if (choques?.length) {
             const c = choques[0];
-            const seguir = await confirmar({
-              titulo: 'Horarios cruzados',
-              texto: `${c.masajista} ya tiene un masaje de ${hora12(c.desde?.slice(0,5))} a ${hora12(c.hasta?.slice(0,5))}. ¿Lo registro igual?`,
-              aceptar: 'Registrar igual'
+            const seguir = await preguntarEnLinea(el('#f-aviso'), {
+              texto: `${c.masajista} ya tiene un masaje de ${hora12(c.desde?.slice(0,5))} a ${hora12(c.hasta?.slice(0,5))}. ¿Lo guardo igual?`,
+              aceptar: 'Guardar igual', rechazar: 'Revisar'
             });
             if (!seguir) return;
           }
-        } catch (_) {}
-      }
+        }
+        if (tipo === 'sauna' || (tipo === 'paquete' && saunaOrden)) {
+          const cruces = await D.crucesSauna(fecha, desfaseSauna() ? sumarMinutos(h, desfaseSauna()) : h,
+                                             servicio.sauna_minutos, reg?.id || null);
+          if (cruces?.length) {
+            const c = cruces[0];
+            const seguir = await preguntarEnLinea(el('#f-aviso'), {
+              texto: `El sauna es para una persona y está ocupado de ${hora12(c.desde?.slice(0,5))} a ${hora12(c.hasta?.slice(0,5))} (${c.cliente}). ¿Lo guardo igual?`,
+              aceptar: 'Guardar igual', rechazar: 'Revisar'
+            });
+            if (!seguir) return;
+          }
+        }
+      } catch (_) {}
     }
 
     const btn = destino === 'atendido' ? el('#f-atendido') : el('#f-reserva');
@@ -417,7 +542,8 @@ export async function formularioServicio(reg, fecha, alGuardar) {
       // Si se escribió un nombre y no se eligió de la lista, igual se guarda.
       const c = await resolverCliente(cliente || textoSuelto(bCliente.texto()), destino);
       await D.guardarRegistro(datos(destino, c), ms, reg?.id || null);
-      avisar(destino === 'atendido' ? 'Masaje guardado' : 'Reserva guardada', 'exito');
+      avisar(destino !== 'atendido' ? 'Reserva guardada'
+        : tipo === 'sauna' ? 'Sauna guardado' : tipo === 'paquete' ? 'Paquete guardado' : 'Masaje guardado', 'exito');
       cerrarHoja();
       alGuardar?.();
     } catch (ex) { fallo(mensajeError(ex)); btn.disabled = false; }
@@ -449,6 +575,12 @@ export async function formularioServicio(reg, fecha, alGuardar) {
     } catch (ex) { avisar(mensajeError(ex), 'error'); }
   };
 
+  try { todos = await D.servicios(true); } catch (_) { todos = []; }
+  if (servicio) {
+    servicio = todos.find(s => s.id === servicio.id) || servicio;
+    tipo = servicio.tipo || tipo;
+  }
+  pintarTipo();
   await pintarCombinaciones();
   if (servicio) pintarTarifa();
 }

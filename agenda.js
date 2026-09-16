@@ -24,6 +24,17 @@ const nombreMasajistas = r => {
 
 const nombreCliente = r => r.cliente?.nombre || r.cliente_texto || null;
 
+// Tipo del registro: el del servicio vivo o, si ya no existe, el guardado.
+const tipoDe = r => r.servicio?.tipo || r.tipo_servicio || 'masaje';
+
+// Minutos totales que ocupa la atención (masaje + sauna en un paquete).
+const minutosDe = r => {
+  const s = r.servicio; if (!s) return null;
+  const t = tipoDe(r);
+  if (t === 'sauna') return s.sauna_minutos;
+  return s.duracion + (t === 'paquete' ? (s.sauna_minutos || 0) : 0);
+};
+
 // Los datos faltantes se muestran como "—" en gris, nunca como cero falso.
 const oFalta = (v, clase = 'vacio') => v ? escapar(v) : `<span class="${clase}">—</span>`;
 
@@ -121,10 +132,16 @@ function fila(conFecha, r) {
     <td class="destacado" data-etiqueta="Hora">${oFalta(hora12(r.hora_ingreso?.slice(0,5)))}</td>
     ${conFecha ? `<td data-etiqueta="Fecha">${fechaCorta(r.fecha)}</td>` : ''}
     <td data-etiqueta="Cliente">${oFalta(nombreCliente(r))}</td>
-    <td data-etiqueta="Terapeuta">${nombreMasajistas(r) || '<span class="vacio">Sin asignar</span>'}</td>
-    <td data-etiqueta="Servicio">${oFalta(s?.masaje || (r.servicio_nombre_snapshot || '').split(' · ')[0])}</td>
+    <td data-etiqueta="Terapeuta">${nombreMasajistas(r)
+      || (tipoDe(r) === 'sauna' ? '<span class="vacio">No aplica</span>' : '<span class="vacio">Sin asignar</span>')}</td>
+    <td data-etiqueta="Servicio">${tipoDe(r) === 'sauna' ? '<span class="insignia insignia--sauna">Sauna</span>'
+      : oFalta(s?.masaje || (r.servicio_nombre_snapshot || '').split(' · ')[0])
+        + (tipoDe(r) === 'paquete' ? ' <span class="insignia insignia--sauna">+ Sauna</span>' : '')}</td>
     <td data-etiqueta="Modalidad">${oFalta(s?.modalidad)}</td>
-    <td data-etiqueta="Tiempo">${s?.duracion ? s.duracion + "'" : '<span class="vacio">—</span>'}</td>
+    <td data-etiqueta="Tiempo">${!s ? '<span class="vacio">—</span>'
+      : tipoDe(r) === 'sauna' ? s.sauna_minutos + "'"
+      : tipoDe(r) === 'paquete' ? `${s.duracion}' + ${s.sauna_minutos}'`
+      : s.duracion + "'"}</td>
     <td class="num" data-etiqueta="Desc">${desc > 0
         ? `<span class="insignia insignia--descuento">−${monto(desc)}</span>`
         : '<span class="vacio">—</span>'}</td>
@@ -179,18 +196,22 @@ export function detalle(r, recargar) {
     <div class="tarifa" style="margin-bottom:18px">
       ${l('Fecha', fechaCorta(r.fecha))}
       ${l('Hora', hora12(r.hora_ingreso?.slice(0,5)))}
-      ${s?.duracion && r.hora_ingreso
-        ? l('Termina ~', hora12(sumarMinutos(r.hora_ingreso.slice(0,5), s.duracion))) : ''}
+      ${minutosDe(r) && r.hora_ingreso
+        ? l('Termina ~', hora12(sumarMinutos(r.hora_ingreso.slice(0,5), minutosDe(r)))) : ''}
+      ${tipoDe(r) === 'paquete' ? l('Sauna', r.sauna_orden === 'antes' ? 'Antes del masaje'
+          : r.sauna_orden === 'despues' ? 'Después del masaje' : 'Sin indicar') : ''}
       ${l('Estado', r.anulado ? 'Anulado' : r.estado === 'atendido' ? 'Atendido' : 'Reserva')}
       ${l('Cliente', (nombreCliente(r) || '—') + (r.cliente?.vip ? '  ★ VIP' : ''))}
       ${l('Servicio', nombreServicio(r) || '—')}
-      ${l('Masajista', nombreMasajistas(r) || 'Sin asignar')}
+      ${l('Masajista', nombreMasajistas(r) || (tipoDe(r) === 'sauna' ? 'No aplica (sauna)' : 'Sin asignar'))}
     </div>
     <div class="tarifa" style="margin-bottom:18px">
       ${l('Precio referencial', monto(r.precio_referencial))}
       ${Number(r.descuento) > 0 ? l('Descuento', '−' + monto(r.descuento), 'tarifa__linea--desc') : ''}
       ${Number(r.ajuste)    > 0 ? l('Ajuste',    '+' + monto(r.ajuste),    'tarifa__linea--desc') : ''}
       ${l('Precio cobrado', monto(r.precio_cobrado), 'tarifa__linea--total')}
+      ${esAdmin() && tipoDe(r) === 'paquete' && r.monto_masajista != null
+        ? l('Para la masajista', monto(r.monto_masajista)) + l('Para el spa (sauna)', monto(r.monto_spa)) : ''}
     </div>
     <div class="tarifa" style="margin-bottom:18px">
       ${l('Forma de pago', r.forma_pago ? etiquetaPago(r) : 'No registrado')}

@@ -294,6 +294,16 @@ tbody tr.entrando { animation: entrar .3s var(--curva); }
 .pregunta-linea p { margin: 0 0 10px; font-size: 15px; }
 .cliente-pendiente { color: var(--tinta-media); font-size: 13px; font-weight: 500; margin-left: 6px; }
 
+.segmentos { display: flex; flex-wrap: wrap; gap: 8px; }
+.segmentos button {
+  flex: 1 1 auto; min-height: 48px; padding: 10px 16px; border-radius: var(--r-sm);
+  background: var(--superficie); border: 1.5px solid var(--borde-fuerte);
+  color: var(--tinta); font-size: 15.5px; font-weight: 600;
+  transition: background .16s var(--curva), border-color .16s var(--curva);
+}
+.segmentos button.activo { background: var(--dorado-tenue); border-color: var(--dorado); color: var(--dorado-oscuro); }
+.insignia--sauna { background: var(--dorado-tenue); color: var(--dorado-oscuro); }
+
 /* --- Selección progresiva del masaje -------------------------------------- */
 .grupo-modalidad { margin-bottom: 16px; }
 .grupo-modalidad > span {

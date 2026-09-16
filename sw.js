@@ -7,7 +7,7 @@
    Solo borra cachés propias (adhamar-*): si Ulianov vive en el mismo
    dominio de GitHub Pages, sus cachés no se tocan.
    =========================================================================== */
-const VERSION = 'adhamar-v2';
+const VERSION = 'adhamar-v3';
 const ARMAZON = [
   './', './index.html', './styles.css', './config.js', './manifest.json',
   './app.js', './core.js', './ui.js', './datos.js', './acceso.js',

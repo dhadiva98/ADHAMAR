@@ -15,7 +15,8 @@ const REGISTRO = `
   forma_pago, dinero_recibido, vuelto, vuelto_metodo, notas,
   anulado, motivo_anulacion, motivo_cancelacion, atendido_en,
   servicio_id, servicio_nombre_snapshot, cliente_id, cliente_texto, usuario_id,
-  servicio:servicios ( id, masaje, modalidad, duracion, nombre_completo,
+  tipo_servicio, sauna_minutos, sauna_orden, precio_masaje_ref, monto_masajista, monto_spa,
+  servicio:servicios ( id, tipo, masaje, modalidad, duracion, sauna_minutos, nombre_completo,
                        precio_referencial, terapeutas_requeridas ),
   cliente:clientes ( id, nombre, telefono, vip, visitas, ultima_visita ),
   masajistas:registro_masajistas (
@@ -67,10 +68,17 @@ export const anularRegistro = (id, motivo) =>
     .update({ anulado: true, motivo_anulacion: motivo, estado: 'cancelado' })
     .eq('id', id).then(ok);
 
-export const avisoSolapamiento = (masajistas, fecha, hora, duracion, excluir = null) =>
+// desfase = minutos entre el ingreso y el inicio del masaje (paquete con sauna primero).
+export const avisoSolapamiento = (masajistas, fecha, hora, duracion, excluir = null, desfase = 0) =>
   sb.rpc('solapamientos', {
     p_masajistas: masajistas, p_fecha: fecha, p_hora: hora,
-    p_duracion: duracion, p_excluir: excluir
+    p_duracion: duracion, p_excluir: excluir, p_desfase: desfase
+  }).then(ok);
+
+// El sauna es para una persona: ¿quién lo ocupa en esa franja?
+export const crucesSauna = (fecha, hora, minutos, excluir = null) =>
+  sb.rpc('cruces_sauna', {
+    p_fecha: fecha, p_hora: hora, p_minutos: minutos, p_excluir: excluir
   }).then(ok);
 
 // ===========================  BÚSQUEDAS  ===================================
@@ -85,7 +93,7 @@ export const duplicadosCliente = () => sb.rpc('posibles_duplicados').then(ok);
 export const servicios = (soloActivos = true) => {
   let q = sb.from('servicios').select('*');
   if (soloActivos) q = q.eq('activo', true);
-  return q.order('masaje').order('modalidad').order('duracion').then(ok);
+  return q.order('tipo').order('masaje').order('modalidad').order('duracion').then(ok);
 };
 
 export const guardarServicio = (s) => {

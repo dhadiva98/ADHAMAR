@@ -56,6 +56,12 @@ async function generar() {
     const real  = suma(r => r.precio_cobrado);
     const porPago = f => regs.filter(r => r.forma_pago === f).reduce((s, r) => s + numero(r.precio_cobrado), 0);
 
+    // Sauna: ingreso propio del spa (sauna sola + la parte sauna de los paquetes).
+    const tipoDe = r => r.tipo_servicio || r.servicio?.tipo || 'masaje';
+    const saunaSpa   = suma(r => r.monto_spa);
+    const saunasSolas = regs.filter(r => tipoDe(r) === 'sauna').length;
+    const paquetes    = regs.filter(r => tipoDe(r) === 'paquete').length;
+
     // Servicios más vendidos
     const porServicio = {};
     regs.forEach(r => {
@@ -66,6 +72,8 @@ async function generar() {
     // Rendimiento por masajista.
     // OJO: cuando dos masajistas hacen un masaje, el monto se atribuye COMPLETO
     // a cada una. La suma de esta columna NO equivale a las ventas totales.
+    // En un paquete solo cuenta la parte del masaje (tarifa normal del masaje
+    // solo); el sauna es del spa y no lleva masajista.
     const porMasajista = {};
     regs.forEach(r => (r.masajistas || []).forEach(m => {
       const n = m.masajista && !m.masajista.eliminada
@@ -73,9 +81,12 @@ async function generar() {
         : m.masajista_nombre_snapshot;
       porMasajista[n] ||= { servicios: 0, ref: 0, desc: 0, cobrado: 0 };
       porMasajista[n].servicios++;
-      porMasajista[n].ref     += numero(r.precio_referencial);
-      porMasajista[n].desc    += numero(r.descuento);
-      porMasajista[n].cobrado += numero(r.precio_cobrado);
+      const paquete = tipoDe(r) === 'paquete';
+      const refM = paquete ? numero(r.precio_masaje_ref ?? r.precio_referencial) : numero(r.precio_referencial);
+      const cobM = numero(r.monto_masajista ?? r.precio_cobrado);
+      porMasajista[n].ref     += refM;
+      porMasajista[n].desc    += paquete ? Math.max(0, refM - cobM) : numero(r.descuento);
+      porMasajista[n].cobrado += cobM;
     }));
 
     salida.innerHTML = `
@@ -94,6 +105,17 @@ async function generar() {
           <div class="tarifa__linea"><span>Yape</span><span>${monto(porPago('yape'))}</span></div>
           <div class="tarifa__linea"><span>Ventas referenciales</span><span>${monto(ref)}</span></div>
         </div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__cabecera"><span class="eyebrow">Sauna · ingreso del spa</span></div>
+        <div class="panel__cuerpo"><div class="tarifa" style="margin:0">
+          <div class="tarifa__linea"><span>Saunas solas</span><span>${saunasSolas}</span></div>
+          <div class="tarifa__linea"><span>Paquetes masaje + sauna</span><span>${paquetes}</span></div>
+          <div class="tarifa__linea tarifa__linea--total"><span>Para el spa por sauna</span><span>${monto(saunaSpa)}</span></div>
+        </div>
+        <p class="ayuda">En los paquetes, a la masajista se le cuenta el precio normal del masaje;
+           el resto del paquete es del spa.</p></div>
       </div>
 
       <div class="panel">
@@ -149,13 +171,17 @@ function exportarVentas(regs, desde, hasta) {
     Fecha: fechaCorta(r.fecha),
     Hora: hora12(r.hora_ingreso?.slice(0, 5)) || '',
     Cliente: r.cliente?.nombre || r.cliente_texto || '',
+    Tipo: ({ masaje: 'Masaje', paquete: 'Masaje + sauna', sauna: 'Sauna' })[r.tipo_servicio] || '',
     Servicio: r.servicio?.nombre_completo || r.servicio_nombre_snapshot || '',
+    'Sauna va': r.sauna_orden === 'antes' ? 'Antes del masaje' : r.sauna_orden === 'despues' ? 'Después del masaje' : '',
     Masajista: (r.masajistas || []).map(m => m.masajista && !m.masajista.eliminada
       ? `${m.masajista.nombre} ${m.masajista.apellido || ''}`.trim()
       : m.masajista_nombre_snapshot).join(' | '),
     'Precio referencial': numero(r.precio_referencial),
     Descuento: numero(r.descuento),
     'Precio cobrado': numero(r.precio_cobrado),
+    'Parte masajista': numero(r.monto_masajista ?? r.precio_cobrado),
+    'Parte spa (sauna)': numero(r.monto_spa),
     'Forma de pago': r.forma_pago || 'No registrado',
     Vuelto: numero(r.vuelto),
     'Vuelto por': r.vuelto_metodo || '',
