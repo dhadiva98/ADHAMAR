@@ -131,7 +131,8 @@ export function vacio(texto, accion = '') {
 // ===========================================================================
 export function autocompletar({
   contenedor, etiqueta, buscar, pintar, alElegir,
-  permitirCrear = null, textoCrear = 'Crear', valorInicial = null, requerido = false
+  permitirCrear = null, textoCrear = 'Crear', valorInicial = null, requerido = false,
+  autoenfocar = true
 }) {
   const id = 'b' + Math.random().toString(36).slice(2, 8);
   contenedor.innerHTML = `
@@ -152,7 +153,12 @@ export function autocompletar({
           <svg viewBox="0 0 24 24" width="20" height="20"><path d="M6 6l12 12M18 6L6 18"
             stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round"/></svg>
         </button></div>`;
-    caja.querySelector('button').onclick = () => { modoBusqueda(); alElegir(null); };
+    caja.querySelector('button').onclick = () => {
+      // Un nombre escrito a mano (aún sin ficha) vuelve al campo para corregirlo.
+      modoBusqueda(item.__nuevo || item.__texto ? (item.nombre || '') : '');
+      caja.querySelector('input')?.focus();
+      alElegir(null);
+    };
     alElegir(item);
   }
 
@@ -182,7 +188,7 @@ export function autocompletar({
       } else if (e.key === 'Escape') cerrar();
     });
     input.addEventListener('blur', () => setTimeout(cerrar, 160));
-    setTimeout(() => input.focus(), 30);
+    if (autoenfocar) setTimeout(() => input.focus(), 30);
   }
 
   function mostrar(texto) {
@@ -210,7 +216,7 @@ export function autocompletar({
       b.onmousedown = e => e.preventDefault();
       b.onclick = async () => {
         cerrar();
-        const nuevo = await permitirCrear(texto, opciones);
+        const nuevo = await permitirCrear(texto, opciones, raiz);
         if (nuevo) modoSeleccionado(nuevo);
       };
       lista.append(b);
@@ -236,4 +242,27 @@ export function autocompletar({
     fijar: item => item ? modoSeleccionado(item) : modoBusqueda(),
     texto: () => caja.querySelector('input')?.value.trim() || ''
   };
+}
+
+// ---------------------------------------------------------------------------
+//  Pregunta dentro del propio campo, SIN abrir otra hoja.
+//  abrirHoja() reemplaza el contenido de la hoja actual: si se usara aquí,
+//  el formulario que se está llenando desaparecería con todo lo escrito.
+// ---------------------------------------------------------------------------
+export function preguntarEnLinea(raiz, { texto, aceptar, rechazar }) {
+  return new Promise(resolve => {
+    raiz.querySelector('.pregunta-linea')?.remove();
+    const d = document.createElement('div');
+    d.className = 'pregunta-linea';
+    d.innerHTML = `<p>${escapar(texto)}</p>
+      <div class="barra-acciones" style="margin:0">
+        <button type="button" class="btn btn--suave" data-r="si" style="flex:1">${escapar(aceptar)}</button>
+        <button type="button" class="btn btn--neutro" data-r="no" style="flex:1">${escapar(rechazar)}</button>
+      </div>`;
+    raiz.append(d);
+    d.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    d.querySelectorAll('button').forEach(b => b.onclick = () => {
+      d.remove(); resolve(b.dataset.r === 'si');
+    });
+  });
 }

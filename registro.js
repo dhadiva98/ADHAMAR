@@ -7,7 +7,7 @@
 // ===========================================================================
 import { estado, hoy, horaAhora, hora12, sumarMinutos, monto, numero,
          escapar, mensajeError, vibrar } from './core.js';
-import { $, abrirHoja, cerrarHoja, avisar, confirmar, autocompletar } from './ui.js';
+import { $, abrirHoja, cerrarHoja, avisar, confirmar, autocompletar, preguntarEnLinea } from './ui.js';
 import * as D from './datos.js';
 
 const MOTIVOS = ['Cliente frecuente', 'Promoción', 'Cortesía', 'Campaña',
@@ -74,6 +74,7 @@ export function reservaRapida(fecha, alGuardar) {
 export async function formularioServicio(reg, fecha, alGuardar) {
   const editando = !!reg;
   const cuerpo = abrirHoja(editando ? 'Completar atención' : 'Registrar servicio', `
+    <div id="f-cliente"></div>
     <div id="f-masaje"></div>
     <div id="f-combinaciones"></div>
     <div id="f-tarifa"></div>
@@ -90,9 +91,8 @@ export async function formularioServicio(reg, fecha, alGuardar) {
     <div id="f-pago"></div>
 
     <details style="margin:8px 0 18px">
-      <summary style="padding:12px 0;font-weight:600;cursor:pointer">Cliente, motivo y notas</summary>
+      <summary style="padding:12px 0;font-weight:600;cursor:pointer">Motivo del descuento y notas</summary>
       <div style="padding-top:12px">
-        <div id="f-cliente"></div>
         <label class="campo"><span>Motivo del descuento</span>
           <select id="f-motivo"><option value="">Sin motivo</option>
             ${MOTIVOS.map(m => `<option>${m}</option>`).join('')}</select></label>
@@ -120,7 +120,10 @@ export async function formularioServicio(reg, fecha, alGuardar) {
       ? `${m.masajista.nombre} ${m.masajista.apellido || ''}`.trim()
       : m.masajista_nombre_snapshot
   })).filter(m => m.id);
-  let cliente   = reg?.cliente || null;
+  // Si la reserva solo tenía un nombre suelto ("Anotar como"), se conserva:
+  // antes se perdía al completar la atención.
+  let cliente   = reg?.cliente
+    || (reg?.cliente_texto ? { id: null, nombre: reg.cliente_texto, __texto: true } : null);
   let todos     = [];
 
   const el = s => cuerpo.querySelector(s);
@@ -333,14 +336,16 @@ export async function formularioServicio(reg, fecha, alGuardar) {
   pintarPago();
 
   // === 6. Cliente y motivo ================================================
-  autocompletar({
+  const bCliente = autocompletar({
     contenedor: el('#f-cliente'), etiqueta: 'Cliente', valorInicial: cliente,
+    autoenfocar: false,
     buscar: D.buscarClientes,
     pintar: c => ({ titulo: (c.vip ? '★ ' : '') + (c.nombre || 'Sin nombre'),
-                    nota: c.visitas ? `${c.visitas} visitas` : 'Nuevo' }),
+                    nota: c.__nuevo || c.__texto ? 'Nuevo'
+                        : c.visitas ? `${c.visitas} visitas` : 'Sin visitas' }),
     alElegir: c => cliente = c,
-    permitirCrear: crearClienteConAviso,
-    textoCrear: 'Crear cliente'
+    permitirCrear: clienteNuevoConAviso,
+    textoCrear: 'Nuevo cliente'
   });
 
   el('#f-motivo').onchange = e =>
@@ -352,8 +357,7 @@ export async function formularioServicio(reg, fecha, alGuardar) {
     [bPrincipal.valor(), ...extras].filter(Boolean).map(m => m.id)
       .filter((id, i, a) => a.indexOf(id) === i);
 
-  function datos(estadoDestino) {
-    const c = cliente;
+  function datos(estadoDestino, c) {
     return {
       estado: estadoDestino,
       fecha,
@@ -361,8 +365,8 @@ export async function formularioServicio(reg, fecha, alGuardar) {
       servicio_id: servicio?.id || null,
       precio_referencial: servicio ? servicio.precio_referencial : null,
       precio_cobrado: el('#f-cobrado') ? numero(el('#f-cobrado').value) : null,
-      cliente_id: c && !c.__texto ? c.id : null,
-      cliente_texto: c && c.__texto ? c.nombre : null,
+      cliente_id: c?.id || null,
+      cliente_texto: c && !c.id ? (c.nombre || null) : null,
       motivo_descuento: el('#f-motivo').value || null,
       motivo_descuento_texto: el('#f-motivo').value === 'Otro' ? el('#f-motivo-otro').value : null,
       forma_pago: el('#f-forma').value || null,
@@ -409,7 +413,10 @@ export async function formularioServicio(reg, fecha, alGuardar) {
     const btn = destino === 'atendido' ? el('#f-atendido') : el('#f-reserva');
     btn.disabled = true;
     try {
-      await D.guardarRegistro(datos(destino), ms, reg?.id || null);
+      // El cliente es OPCIONAL y nunca bloquea el guardado.
+      // Si se escribió un nombre y no se eligió de la lista, igual se guarda.
+      const c = await resolverCliente(cliente || textoSuelto(bCliente.texto()), destino);
+      await D.guardarRegistro(datos(destino, c), ms, reg?.id || null);
       avisar(destino === 'atendido' ? 'Masaje guardado' : 'Reserva guardada', 'exito');
       cerrarHoja();
       alGuardar?.();
@@ -447,22 +454,56 @@ export async function formularioServicio(reg, fecha, alGuardar) {
 }
 
 // ---------------------------------------------------------------------------
-//  Crear cliente con aviso de posible duplicado.
-//  No bloquea la creación, pero obliga a pasar por la advertencia.
+//  CLIENTE NUEVO
+//  Al elegir "+ Nuevo cliente" todavía NO se crea la ficha: se crea al guardar
+//  la atención. Así, si el formulario se cancela, no quedan fichas vacías.
+//  Si el nombre se parece mucho a alguien que ya existe, se pregunta dentro
+//  del mismo campo (abrir otra hoja borraría el formulario a medio llenar).
 // ---------------------------------------------------------------------------
-export async function crearClienteConAviso(texto, parecidos = []) {
+export async function clienteNuevoConAviso(texto, parecidos = [], raiz = null) {
+  const nombre = (texto || '').trim();
+  if (!nombre) return null;
   const casi = (parecidos || []).find(c => c.puntaje > 1.4);
-  if (casi) {
-    const esEse = await confirmar({
-      titulo: '¿Es este cliente?',
-      texto: `Ya existe ${casi.nombre}${casi.visitas ? ` con ${casi.visitas} visitas` : ''}. ¿Te refieres a esa persona?`,
-      aceptar: 'Sí, es este cliente'
+  if (casi && raiz) {
+    const esEse = await preguntarEnLinea(raiz, {
+      texto: `Ya existe «${casi.nombre}»${casi.visitas ? ` con ${casi.visitas} visitas` : ''}. ¿Es esa persona?`,
+      aceptar: 'Sí, es ella', rechazar: 'No, es otra persona'
     });
     if (esEse) return casi;
   }
+  return { id: null, nombre, __nuevo: true };
+}
+
+// Se mantiene por compatibilidad con otras pantallas.
+export const crearClienteConAviso = clienteNuevoConAviso;
+
+const textoSuelto = t => t ? { id: null, nombre: t, __nuevo: true } : null;
+
+const normalizar = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+  .toLowerCase().replace(/\s+/g, ' ').trim();
+
+// Convierte lo que haya en el campo cliente en algo guardable:
+//  · cliente con ficha         → se usa tal cual
+//  · nombre escrito, RESERVA   → queda como nombre suelto (se vincula al atender)
+//  · nombre escrito, ATENCIÓN  → se vincula a la ficha con el mismo nombre
+//                                exacto, o se crea una ficha nueva
+// Si algo falla, se guarda el nombre suelto: la atención NUNCA se pierde por
+// culpa del cliente. Administración puede corregirlo después (Clientes →
+// Editar datos / Posibles duplicados, o Corregir en la atención).
+async function resolverCliente(c, destino) {
+  if (!c) return null;
+  if (c.id) return c;
+  const nombre = (c.nombre || '').trim();
+  if (!nombre) return null;
+  if (destino !== 'atendido') return { id: null, nombre };
   try {
-    const nuevo = await D.crearCliente({ nombre: texto });
-    avisar('Cliente creado', 'exito');
+    const iguales = (await D.buscarClientes(nombre))
+      .filter(x => normalizar(x.nombre) === normalizar(nombre));
+    if (iguales.length) return iguales[0];
+    const nuevo = await D.crearCliente({ nombre });
     return nuevo;
-  } catch (ex) { avisar(mensajeError(ex), 'error'); return null; }
+  } catch (ex) {
+    console.error('[Adhamar] No se pudo crear la ficha del cliente', ex);
+    return { id: null, nombre };
+  }
 }

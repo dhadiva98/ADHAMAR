@@ -15,6 +15,7 @@ export async function vistaClientes() {
       <input type="search" id="c-buscar" placeholder="Buscar cliente…"
              style="flex:1;min-width:200px;padding:13px 14px;border-radius:10px;font-size:16px;
                     border:1.5px solid var(--borde-fuerte);background:var(--superficie);color:inherit">
+      <button class="btn btn--principal" id="c-nuevo">+ Nuevo cliente</button>
       ${esAdmin() ? '<button class="btn btn--neutro" id="c-duplicados">Posibles duplicados</button>' : ''}
     </div>
     <div id="c-lista">${esqueleto(6)}</div>`;
@@ -42,9 +43,59 @@ export async function vistaClientes() {
   };
 
   $('#c-buscar').oninput = esperar(e => pintar(e.target.value.trim()), 250);
+  $('#c-nuevo').onclick = nuevoCliente;
   const dup = $('#c-duplicados');
   if (dup) dup.onclick = panelDuplicados;
   pintar();
+}
+
+// ---------------------------------------------------------------------------
+//  Alta manual de un cliente (también se crean solos al guardar una atención).
+// ---------------------------------------------------------------------------
+function nuevoCliente() {
+  const cuerpo = abrirHoja('Nuevo cliente', `
+    <label class="campo"><span>Nombre</span>
+      <input type="text" id="cn-nombre" autocomplete="off"></label>
+    <label class="campo"><span>Teléfono <em style="text-transform:none;font-style:normal">(opcional)</em></span>
+      <input type="tel" id="cn-tel"></label>
+    <label class="casilla"><input type="checkbox" id="cn-vip">
+      <span>Cliente VIP (solo una marca visual, no cambia precios)</span></label>
+    <label class="campo"><span>Observaciones <em style="text-transform:none;font-style:normal">(opcional)</em></span>
+      <textarea id="cn-obs"></textarea></label>
+    <p class="error" id="cn-error" hidden></p>
+    <button class="btn btn--principal btn--bloque" id="cn-guardar">Guardar cliente</button>`);
+
+  setTimeout(() => cuerpo.querySelector('#cn-nombre').focus(), 60);
+
+  cuerpo.querySelector('#cn-guardar').onclick = async e => {
+    const btn = e.currentTarget;
+    const err = cuerpo.querySelector('#cn-error');
+    const nombre = cuerpo.querySelector('#cn-nombre').value.trim();
+    err.hidden = true;
+    if (!nombre) { err.textContent = 'Escribe el nombre.'; err.hidden = false; return; }
+
+    const gemelo = await buscarGemelo(nombre, null);
+    if (gemelo) {
+      err.textContent = `Ya existe «${gemelo.nombre}». Búscalo en la lista en lugar de crearlo otra vez.`;
+      err.hidden = false; return;
+    }
+
+    btn.disabled = true;
+    try {
+      await D.crearCliente({
+        nombre,
+        telefono: cuerpo.querySelector('#cn-tel').value.trim() || null,
+        vip: cuerpo.querySelector('#cn-vip').checked,
+        observaciones: cuerpo.querySelector('#cn-obs').value.trim() || null
+      });
+      avisar('Cliente creado', 'exito');
+      cerrarHoja();
+      vistaClientes();
+    } catch (ex) {
+      err.textContent = mensajeError(ex); err.hidden = false;
+      btn.disabled = false;
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -172,8 +223,9 @@ function proponerUnir(actual, gemelo, datos) {
         <b>${escapar(gemelo.telefono || '—')}</b></div>
     </div>
 
-    <button class="btn btn--principal btn--bloque" id="pu-unir">
-      Unir en una sola ficha</button>
+    ${esAdmin() ? `<button class="btn btn--principal btn--bloque" id="pu-unir">
+      Unir en una sola ficha</button>` : `<p class="ayuda" style="margin:0 0 12px">
+      Si son la misma persona, avisa a administración para que las una.</p>`}
     <button class="btn btn--neutro btn--bloque" id="pu-separado" style="margin-top:10px">
       Son personas distintas, guardar por separado</button>`);
 
@@ -182,7 +234,8 @@ function proponerUnir(actual, gemelo, datos) {
   const [conservar, absorber] = propias >= ajenas
     ? [actual.id, gemelo.id] : [gemelo.id, actual.id];
 
-  cuerpo.querySelector('#pu-unir').onclick = async () => {
+  const unir = cuerpo.querySelector('#pu-unir');
+  if (unir) unir.onclick = async () => {
     try {
       // Primero se corrige el nombre, para que la ficha que sobreviva
       // quede bien escrita aunque la que se conserve sea la otra.

@@ -287,6 +287,13 @@ tbody tr.entrando { animation: entrar .3s var(--curva); }
   font-size: 17px; font-weight: 550; min-height: 50px;
 }
 
+.pregunta-linea {
+  margin-top: 8px; padding: 12px 14px; border-radius: var(--r-sm);
+  background: var(--superficie-2); border: 1px solid var(--borde-fuerte);
+}
+.pregunta-linea p { margin: 0 0 10px; font-size: 15px; }
+.cliente-pendiente { color: var(--tinta-media); font-size: 13px; font-weight: 500; margin-left: 6px; }
+
 /* --- Selección progresiva del masaje -------------------------------------- */
 .grupo-modalidad { margin-bottom: 16px; }
 .grupo-modalidad > span {
