@@ -8,11 +8,17 @@ import { estado, esAdmin, hoy, fechaCorta, fechaLarga, hora12, sumarMinutos,
 import { $, abrirHoja, cerrarHoja, avisar, confirmar, esqueleto, vacio } from './ui.js';
 import * as D from './datos.js';
 import { formularioServicio, reservaRapida } from './registro.js';
+import { formularioPaquete } from './paquetes.js';
 
 let seleccion = new Set();
 
 // --- Nombre resuelto: vivo si existe, snapshot si fue eliminada -------------
-const nombreServicio = r => r.servicio?.nombre_completo || r.servicio_nombre_snapshot || null;
+const nombreServicio = r => {
+  const base = r.servicio?.nombre_completo || r.servicio_nombre_snapshot || null;
+  if (!r.venta_paquete) return base;
+  const paq = r.paquete?.nombre || r.paquete_nombre_snapshot || 'Paquete';
+  return `${paq} (persona ${r.persona})` + (base ? ` · ${base}` : '');
+};
 
 const nombreMasajistas = r => {
   const ms = (r.masajistas || []).sort((a, b) => a.orden - b.orden);
@@ -25,11 +31,15 @@ const nombreMasajistas = r => {
 const nombreCliente = r => r.cliente?.nombre || r.cliente_texto || null;
 
 // Tipo del registro: el del servicio vivo o, si ya no existe, el guardado.
-const tipoDe = r => r.servicio?.tipo || r.tipo_servicio || 'masaje';
+// En los paquetes con nombre manda el tipo guardado (masaje+sauna o solo sauna).
+const tipoDe = r => r.venta_paquete ? (r.tipo_servicio || 'paquete')
+                                    : (r.servicio?.tipo || r.tipo_servicio || 'masaje');
 
 // Minutos totales que ocupa la atención (masaje + sauna en un paquete).
 const minutosDe = r => {
-  const s = r.servicio; if (!s) return null;
+  const s = r.servicio;
+  if (r.venta_paquete) return ((s?.duracion || r.paquete?.masaje_minutos || 0) + (r.sauna_minutos || 0)) || null;
+  if (!s) return null;
   const t = tipoDe(r);
   if (t === 'sauna') return s.sauna_minutos;
   return s.duracion + (t === 'paquete' ? (s.sauna_minutos || 0) : 0);
@@ -85,7 +95,14 @@ function conectarBarra(fecha) {
     });
     if (!ok) return;
     try {
-      for (const id of seleccion) await D.borrarRegistro(id);
+      const regs = await D.registrosDelDia(fecha);
+      const ventas = new Set();
+      for (const id of seleccion) {
+        const r = regs.find(x => x.id === id);
+        if (r?.venta_paquete) ventas.add(r.venta_paquete);
+        else await D.borrarRegistro(id);
+      }
+      for (const v of ventas) await D.borrarVenta(v);
       seleccion.clear();
       avisar('Reservas borradas', 'exito');
       vistaAgenda(fecha);
@@ -134,11 +151,17 @@ function fila(conFecha, r) {
     <td data-etiqueta="Cliente">${oFalta(nombreCliente(r))}</td>
     <td data-etiqueta="Terapeuta">${nombreMasajistas(r)
       || (tipoDe(r) === 'sauna' ? '<span class="vacio">No aplica</span>' : '<span class="vacio">Sin asignar</span>')}</td>
-    <td data-etiqueta="Servicio">${tipoDe(r) === 'sauna' ? '<span class="insignia insignia--sauna">Sauna</span>'
+    <td data-etiqueta="Servicio">${r.venta_paquete
+      ? `<span class="insignia insignia--sauna">${escapar(r.paquete?.nombre || r.paquete_nombre_snapshot || 'Paquete')} · ${r.persona}/${r.paquete?.personas || r.persona}</span>`
+        + (s?.masaje ? ` ${escapar(s.masaje)}` : '')
+      : tipoDe(r) === 'sauna' ? '<span class="insignia insignia--sauna">Sauna</span>'
       : oFalta(s?.masaje || (r.servicio_nombre_snapshot || '').split(' · ')[0])
         + (tipoDe(r) === 'paquete' ? ' <span class="insignia insignia--sauna">+ Sauna</span>' : '')}</td>
     <td data-etiqueta="Modalidad">${oFalta(s?.modalidad)}</td>
-    <td data-etiqueta="Tiempo">${!s ? '<span class="vacio">—</span>'
+    <td data-etiqueta="Tiempo">${r.venta_paquete
+      ? [ (s?.duracion || r.paquete?.masaje_minutos) ? (s?.duracion || r.paquete?.masaje_minutos) + "'" : '',
+          r.sauna_minutos ? `sauna ${r.sauna_minutos}'` : '' ].filter(Boolean).join(' + ') || '<span class="vacio">—</span>'
+      : !s ? '<span class="vacio">—</span>'
       : tipoDe(r) === 'sauna' ? s.sauna_minutos + "'"
       : tipoDe(r) === 'paquete' ? `${s.duracion}' + ${s.sauna_minutos}'`
       : s.duracion + "'"}</td>
@@ -176,11 +199,21 @@ function conectarFilas(regs, recargar) {
       if (e.target.closest('[data-marca]')) return;
       const r = regs.find(x => String(x.id) === tr.dataset.id);
       if (!r) return;
-      // Tocar una reserva abre directamente el formulario para completarla.
-      if (r.estado === 'reserva') formularioServicio(r, r.fecha, recargar);
-      else detalle(r, recargar);
+      abrirRegistro(r, recargar);
     };
   });
+}
+
+// Tocar una reserva abre directamente el formulario para completarla.
+// Los paquetes con nombre abren su propio formulario con todas sus personas.
+export async function abrirRegistro(r, recargar) {
+  if (r.venta_paquete && r.estado === 'reserva') {
+    try { formularioPaquete(await D.ventaPaquete(r.venta_paquete), r.fecha, recargar); }
+    catch (ex) { avisar(mensajeError(ex), 'error'); }
+    return;
+  }
+  if (r.estado === 'reserva') formularioServicio(r, r.fecha, recargar);
+  else detalle(r, recargar);
 }
 
 // ===========================================================================
@@ -192,15 +225,17 @@ export function detalle(r, recargar) {
   const l = (k, v, extra = '') => v == null || v === ''
     ? '' : `<div class="tarifa__linea ${extra}"><span>${k}</span><span>${v}</span></div>`;
 
-  const cuerpo = abrirHoja('Detalle de la atención', `
+  const enPaquete = !!r.venta_paquete;
+  const cuerpo = abrirHoja(enPaquete ? 'Detalle del paquete' : 'Detalle de la atención', `
     <div class="tarifa" style="margin-bottom:18px">
       ${l('Fecha', fechaCorta(r.fecha))}
       ${l('Hora', hora12(r.hora_ingreso?.slice(0,5)))}
       ${minutosDe(r) && r.hora_ingreso
         ? l('Termina ~', hora12(sumarMinutos(r.hora_ingreso.slice(0,5), minutosDe(r)))) : ''}
-      ${tipoDe(r) === 'paquete' ? l('Sauna', r.sauna_orden === 'antes' ? 'Antes del masaje'
+      ${tipoDe(r) === 'paquete' && r.sauna_minutos ? l('Sauna', r.sauna_orden === 'antes' ? 'Antes del masaje'
           : r.sauna_orden === 'despues' ? 'Después del masaje' : 'Sin indicar') : ''}
       ${l('Estado', r.anulado ? 'Anulado' : r.estado === 'atendido' ? 'Atendido' : 'Reserva')}
+      ${enPaquete ? l('Paquete', `${escapar(r.paquete?.nombre || r.paquete_nombre_snapshot || '')} · persona ${r.persona} de ${r.paquete?.personas || r.persona}`) : ''}
       ${l('Cliente', (nombreCliente(r) || '—') + (r.cliente?.vip ? '  ★ VIP' : ''))}
       ${l('Servicio', nombreServicio(r) || '—')}
       ${l('Masajista', nombreMasajistas(r) || (tipoDe(r) === 'sauna' ? 'No aplica (sauna)' : 'Sin asignar'))}
@@ -209,7 +244,7 @@ export function detalle(r, recargar) {
       ${l('Precio referencial', monto(r.precio_referencial))}
       ${Number(r.descuento) > 0 ? l('Descuento', '−' + monto(r.descuento), 'tarifa__linea--desc') : ''}
       ${Number(r.ajuste)    > 0 ? l('Ajuste',    '+' + monto(r.ajuste),    'tarifa__linea--desc') : ''}
-      ${l('Precio cobrado', monto(r.precio_cobrado), 'tarifa__linea--total')}
+      ${l(enPaquete ? 'Cobrado (parte de esta persona)' : 'Precio cobrado', monto(r.precio_cobrado), 'tarifa__linea--total')}
       ${esAdmin() && tipoDe(r) === 'paquete' && r.monto_masajista != null
         ? l('Para la masajista', monto(r.monto_masajista)) + l('Para el spa (sauna)', monto(r.monto_spa)) : ''}
     </div>
@@ -232,15 +267,20 @@ export function detalle(r, recargar) {
 
   if (!esAdmin() || r.anulado) return;
 
-  cuerpo.querySelector('#d-editar').onclick = () => {
+  cuerpo.querySelector('#d-editar').onclick = async () => {
     cerrarHoja();
-    setTimeout(() => formularioServicio(r, r.fecha, recargar), 240);
+    if (enPaquete) {
+      try { const filas = await D.ventaPaquete(r.venta_paquete);
+            setTimeout(() => formularioPaquete(filas, r.fecha, recargar), 240); }
+      catch (ex) { avisar(mensajeError(ex), 'error'); }
+    } else setTimeout(() => formularioServicio(r, r.fecha, recargar), 240);
   };
 
   // Eliminar una atención es SIEMPRE baja lógica con motivo obligatorio:
   // un registro que desaparece sin rastro rompe el cuadre de caja del día.
   cuerpo.querySelector('#d-anular').onclick = () => {
     const c2 = abrirHoja('Anular atención', `
+      ${enPaquete ? '<p class="ayuda" style="margin:0 0 12px"><b>Se anula el paquete completo</b> (todas sus personas).</p>' : ''}
       <p class="ayuda" style="margin:0 0 18px">La atención deja de contar como venta y el cierre del día
          se recalcula solo. El registro no se borra: queda con su motivo, para que el cuadre siga cerrando.</p>
       <label class="campo"><span>¿Por qué se anula?</span>
@@ -253,7 +293,8 @@ export function detalle(r, recargar) {
       const err = c2.querySelector('#an-error');
       if (!motivo) { err.textContent = 'Escribe el motivo. Es obligatorio.'; err.hidden = false; return; }
       try {
-        await D.anularRegistro(r.id, motivo);
+        if (enPaquete) await D.anularVenta(r.venta_paquete, motivo);
+        else await D.anularRegistro(r.id, motivo);
         avisar('Atención anulada', 'exito');
         cerrarHoja(); recargar?.();
       } catch (ex) { err.textContent = mensajeError(ex); err.hidden = false; }
@@ -272,7 +313,7 @@ async function proximasReservas() {
     cuerpo.querySelectorAll('tr[data-clic]').forEach(tr => tr.onclick = () => {
       const r = regs.find(x => String(x.id) === tr.dataset.id);
       cerrarHoja();
-      setTimeout(() => formularioServicio(r, r.fecha, () => vistaAgenda(estado.fecha)), 240);
+      setTimeout(() => abrirRegistro(r, () => vistaAgenda(estado.fecha)), 240);
     });
   } catch (ex) { cuerpo.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; }
 }
@@ -316,7 +357,7 @@ export async function vistaHistorial() {
                                    : vacio('No hay registros con esos filtros.');
       caja.querySelectorAll('tr[data-clic]').forEach(tr => tr.onclick = () => {
         const r = regs.find(x => String(x.id) === tr.dataset.id);
-        r.estado === 'reserva' ? formularioServicio(r, r.fecha, buscar) : detalle(r, buscar);
+        abrirRegistro(r, buscar);
       });
     } catch (ex) { caja.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; }
   };

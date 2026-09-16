@@ -16,6 +16,9 @@ const REGISTRO = `
   anulado, motivo_anulacion, motivo_cancelacion, atendido_en,
   servicio_id, servicio_nombre_snapshot, cliente_id, cliente_texto, usuario_id,
   tipo_servicio, sauna_minutos, sauna_orden, precio_masaje_ref, monto_masajista, monto_spa,
+  paquete_id, venta_paquete, persona, paquete_nombre_snapshot,
+  paquete:paquetes ( id, nombre, personas, masaje_minutos, masaje_fijo, modalidad_fija,
+                     sauna_minutos, precio, activo ),
   servicio:servicios ( id, tipo, masaje, modalidad, duracion, sauna_minutos, nombre_completo,
                        precio_referencial, terapeutas_requeridas ),
   cliente:clientes ( id, nombre, telefono, vip, visitas, ultima_visita ),
@@ -59,6 +62,22 @@ export function historial(f = {}) {
 export const guardarRegistro = (datos, masajistas = [], id = null) =>
   sb.rpc('guardar_registro', { p_datos: datos, p_masajistas: masajistas, p_id: id }).then(ok);
 
+// --- Paquetes con nombre: una fila por persona, unidas por venta_paquete ---
+export const guardarVentaPaquete = (datos, personas, venta = null) =>
+  sb.rpc('guardar_venta_paquete', { p_datos: datos, p_personas: personas, p_venta: venta }).then(ok);
+
+export const ventaPaquete = venta =>
+  sb.from('registros_servicios').select(REGISTRO)
+    .eq('venta_paquete', venta).order('persona').then(ok);
+
+export const borrarVenta = venta =>
+  sb.from('registros_servicios').delete().eq('venta_paquete', venta).then(ok);
+
+export const anularVenta = (venta, motivo) =>
+  sb.from('registros_servicios')
+    .update({ anulado: true, motivo_anulacion: motivo, estado: 'cancelado' })
+    .eq('venta_paquete', venta).then(ok);
+
 export const borrarRegistro = id =>
   sb.from('registros_servicios').delete().eq('id', id).then(ok);
 
@@ -69,6 +88,7 @@ export const anularRegistro = (id, motivo) =>
     .eq('id', id).then(ok);
 
 // desfase = minutos entre el ingreso y el inicio del masaje (paquete con sauna primero).
+// excluir = lista de ids de registros que no cuentan (el que se está editando).
 export const avisoSolapamiento = (masajistas, fecha, hora, duracion, excluir = null, desfase = 0) =>
   sb.rpc('solapamientos', {
     p_masajistas: masajistas, p_fecha: fecha, p_hora: hora,
@@ -100,6 +120,19 @@ export const guardarServicio = (s) => {
   const { id, ...resto } = s;
   return id ? sb.from('servicios').update(resto).eq('id', id).then(ok)
             : sb.from('servicios').insert(resto).then(ok);
+};
+
+// Paquetes con nombre ("Ritual Pareja"…)
+export const paquetes = (soloActivos = true) => {
+  let q = sb.from('paquetes').select('*');
+  if (soloActivos) q = q.eq('activo', true);
+  return q.order('orden').order('nombre').then(ok);
+};
+
+export const guardarPaquete = p => {
+  const { id, ...resto } = p;
+  return id ? sb.from('paquetes').update(resto).eq('id', id).then(ok)
+            : sb.from('paquetes').insert(resto).then(ok);
 };
 
 export const listasCatalogo = async () => ({

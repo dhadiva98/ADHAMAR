@@ -59,12 +59,20 @@ async function generar() {
     // Sauna: ingreso propio del spa (sauna sola + la parte sauna de los paquetes).
     const tipoDe = r => r.tipo_servicio || r.servicio?.tipo || 'masaje';
     const saunaSpa   = suma(r => r.monto_spa);
-    const saunasSolas = regs.filter(r => tipoDe(r) === 'sauna').length;
-    const paquetes    = regs.filter(r => tipoDe(r) === 'paquete').length;
+    const saunasSolas = regs.filter(r => tipoDe(r) === 'sauna' && !r.venta_paquete).length;
+    const paquetes    = regs.filter(r => tipoDe(r) === 'paquete' && !r.venta_paquete).length;
+    const ventasPaquete = new Set(regs.filter(r => r.venta_paquete).map(r => r.venta_paquete)).size;
 
     // Servicios más vendidos
     const porServicio = {};
     regs.forEach(r => {
+      // Un paquete con nombre cuenta una vez por venta, no por persona.
+      if (r.venta_paquete) {
+        if (r.persona !== 1) return;
+        const n = `Paquete: ${r.paquete?.nombre || r.paquete_nombre_snapshot || '—'}`;
+        porServicio[n] = (porServicio[n] || 0) + 1;
+        return;
+      }
       const n = r.servicio?.nombre_completo || r.servicio_nombre_snapshot || 'Sin servicio';
       porServicio[n] = (porServicio[n] || 0) + 1;
     });
@@ -108,13 +116,14 @@ async function generar() {
       </div>
 
       <div class="panel">
-        <div class="panel__cabecera"><span class="eyebrow">Sauna · ingreso del spa</span></div>
+        <div class="panel__cabecera"><span class="eyebrow">Sauna y paquetes · ingreso del spa</span></div>
         <div class="panel__cuerpo"><div class="tarifa" style="margin:0">
           <div class="tarifa__linea"><span>Saunas solas</span><span>${saunasSolas}</span></div>
-          <div class="tarifa__linea"><span>Paquetes masaje + sauna</span><span>${paquetes}</span></div>
-          <div class="tarifa__linea tarifa__linea--total"><span>Para el spa por sauna</span><span>${monto(saunaSpa)}</span></div>
+          <div class="tarifa__linea"><span>Masaje + sauna (una persona)</span><span>${paquetes}</span></div>
+          <div class="tarifa__linea"><span>Paquetes con nombre vendidos</span><span>${ventasPaquete}</span></div>
+          <div class="tarifa__linea tarifa__linea--total"><span>Para el spa (sauna y paquetes)</span><span>${monto(saunaSpa)}</span></div>
         </div>
-        <p class="ayuda">En los paquetes, a la masajista se le cuenta el precio normal del masaje;
+        <p class="ayuda">En los paquetes, a la masajista se le cuenta el precio normal de su masaje;
            el resto del paquete es del spa.</p></div>
       </div>
 
@@ -171,7 +180,9 @@ function exportarVentas(regs, desde, hasta) {
     Fecha: fechaCorta(r.fecha),
     Hora: hora12(r.hora_ingreso?.slice(0, 5)) || '',
     Cliente: r.cliente?.nombre || r.cliente_texto || '',
-    Tipo: ({ masaje: 'Masaje', paquete: 'Masaje + sauna', sauna: 'Sauna' })[r.tipo_servicio] || '',
+    Tipo: r.venta_paquete ? 'Paquete'
+        : ({ masaje: 'Masaje', paquete: 'Masaje + sauna', sauna: 'Sauna' })[r.tipo_servicio] || '',
+    Paquete: r.venta_paquete ? `${r.paquete?.nombre || r.paquete_nombre_snapshot || ''} (persona ${r.persona})` : '',
     Servicio: r.servicio?.nombre_completo || r.servicio_nombre_snapshot || '',
     'Sauna va': r.sauna_orden === 'antes' ? 'Antes del masaje' : r.sauna_orden === 'despues' ? 'Después del masaje' : '',
     Masajista: (r.masajistas || []).map(m => m.masajista && !m.masajista.eliminada

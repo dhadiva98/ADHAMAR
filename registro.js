@@ -9,6 +9,7 @@ import { estado, hoy, horaAhora, hora12, sumarMinutos, monto, numero,
          escapar, mensajeError, vibrar } from './core.js';
 import { $, abrirHoja, cerrarHoja, avisar, confirmar, autocompletar, preguntarEnLinea } from './ui.js';
 import * as D from './datos.js';
+import { formularioPaquete } from './paquetes.js';
 
 const MOTIVOS = ['Cliente frecuente', 'Promoción', 'Cortesía', 'Campaña',
                  'Compensación', 'Descuento especial', 'Otro'];
@@ -132,6 +133,7 @@ export async function formularioServicio(reg, fecha, alGuardar) {
   let cliente   = reg?.cliente
     || (reg?.cliente_texto ? { id: null, nombre: reg.cliente_texto, __texto: true } : null);
   let todos     = [];
+  let conNombre = [];   // paquetes con nombre ("Ritual Pareja"…)
   // Tipo de servicio: masaje, paquete (masaje + sauna) o sauna sola.
   let tipo       = servicio?.tipo || reg?.tipo_servicio || 'masaje';
   let saunaOrden = reg?.sauna_orden || null;
@@ -241,10 +243,18 @@ export async function formularioServicio(reg, fecha, alGuardar) {
     const hay = t => t === tipo || todos.some(s => s.tipo === t);
     const opciones = [['masaje', 'Masaje'], ['paquete', 'Masaje + sauna'], ['sauna', 'Sauna']]
       .filter(([t]) => hay(t));
-    el('#f-tipo-caja').classList.toggle('oculto', opciones.length < 2);
+    // Los paquetes con nombre tienen su propio formulario (1 o 2 personas).
+    const nombrados = !editando && conNombre.length;
+    el('#f-tipo-caja').classList.toggle('oculto', opciones.length + (nombrados ? 1 : 0) < 2);
     el('#f-tipo').innerHTML = opciones.map(([t, txt]) =>
-      `<button type="button" data-tipo="${t}" class="${t === tipo ? 'activo' : ''}">${txt}</button>`).join('');
+      `<button type="button" data-tipo="${t}" class="${t === tipo ? 'activo' : ''}">${txt}</button>`).join('')
+      + (nombrados ? '<button type="button" data-nombrado="1">Paquetes</button>' : '');
     el('#f-tipo').querySelectorAll('[data-tipo]').forEach(b => b.onclick = () => cambiarTipo(b.dataset.tipo));
+    const bn = el('#f-tipo [data-nombrado]');
+    if (bn) bn.onclick = () => formularioPaquete(null, fecha, alGuardar, {
+      hora: el('#f-hora').value || null,
+      cliente: cliente || (bCliente.texto() ? { id: null, nombre: bCliente.texto(), __nuevo: true } : null)
+    });
     aplicarTipo();
   }
 
@@ -510,7 +520,7 @@ export async function formularioServicio(reg, fecha, alGuardar) {
       try {
         if (tipo !== 'sauna' && ms.length) {
           const choques = await D.avisoSolapamiento(ms, fecha, h, servicio.duracion,
-                                                    reg?.id || null, desfaseMasaje());
+                                                    reg?.id ? [reg.id] : null, desfaseMasaje());
           if (choques?.length) {
             const c = choques[0];
             const seguir = await preguntarEnLinea(el('#f-aviso'), {
@@ -522,7 +532,7 @@ export async function formularioServicio(reg, fecha, alGuardar) {
         }
         if (tipo === 'sauna' || (tipo === 'paquete' && saunaOrden)) {
           const cruces = await D.crucesSauna(fecha, desfaseSauna() ? sumarMinutos(h, desfaseSauna()) : h,
-                                             servicio.sauna_minutos, reg?.id || null);
+                                             servicio.sauna_minutos, reg?.id ? [reg.id] : null);
           if (cruces?.length) {
             const c = cruces[0];
             const seguir = await preguntarEnLinea(el('#f-aviso'), {
@@ -576,6 +586,7 @@ export async function formularioServicio(reg, fecha, alGuardar) {
   };
 
   try { todos = await D.servicios(true); } catch (_) { todos = []; }
+  try { conNombre = await D.paquetes(true); } catch (_) { conNombre = []; }
   if (servicio) {
     servicio = todos.find(s => s.id === servicio.id) || servicio;
     tipo = servicio.tipo || tipo;
@@ -622,7 +633,7 @@ const normalizar = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '
 // Si algo falla, se guarda el nombre suelto: la atención NUNCA se pierde por
 // culpa del cliente. Administración puede corregirlo después (Clientes →
 // Editar datos / Posibles duplicados, o Corregir en la atención).
-async function resolverCliente(c, destino) {
+export async function resolverCliente(c, destino) {
   if (!c) return null;
   if (c.id) return c;
   const nombre = (c.nombre || '').trim();

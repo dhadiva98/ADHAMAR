@@ -8,6 +8,7 @@
 import { monto, escapar, mensajeError, numero } from './core.js';
 import { $, abrirHoja, cerrarHoja, avisar, esqueleto, vacio, confirmar } from './ui.js';
 import * as D from './datos.js';
+import { describirPaquete, paraCuantos } from './paquetes.js';
 
 function matriz(servicios) {
   const modalidades = [...new Set(servicios.map(s => s.modalidad))];
@@ -29,10 +30,11 @@ export async function vistaTarifario() {
   let servicios;
   try { servicios = await D.servicios(true); }
   catch (ex) { v.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; return; }
-  if (!servicios.length) { v.innerHTML = vacio('Todavía no hay precios cargados.'); return; }
-
   // La matriz es solo para masajes; paquetes y sauna van en sus propias tablas.
-  const extras = bloquesSaunaYPaquetes(servicios);
+  let nombrados = [];
+  try { nombrados = await D.paquetes(true); } catch (_) {}
+  if (!servicios.length && !nombrados.length) { v.innerHTML = vacio('Todavía no hay precios cargados.'); return; }
+  const extras = bloquePaquetesConNombre(nombrados) + bloquesSaunaYPaquetes(servicios);
   servicios = servicios.filter(s => s.tipo === 'masaje');
   const m = matriz(servicios);
 
@@ -118,8 +120,8 @@ function bloquesSaunaYPaquetes(todos, editable = false) {
 
 
   return `
-    <div class="panel" style="margin-top:18px">
-      <div class="panel__cabecera"><span class="eyebrow">Paquetes: masaje + sauna</span></div>
+    ${!editable && !paquetes.length ? '' : `<div class="panel" style="margin-top:18px">
+      <div class="panel__cabecera"><span class="eyebrow">Masaje + sauna (una persona)</span></div>
       ${paquetes.length ? `<div class="tabla-envoltura"><table class="a-tarjetas">
         <thead><tr><th>Paquete</th><th class="num">Precio del paquete</th>
           ${editable ? '<th class="num">Masajista (masaje solo)</th><th class="num">Spa (sauna)</th>' : ''}</tr></thead>
@@ -133,11 +135,11 @@ function bloquesSaunaYPaquetes(todos, editable = false) {
                 : '<span class="error" style="font-size:13px">Falta el precio del masaje solo</span>'}</td>
               <td class="num" data-etiqueta="Spa">${mas != null ? monto(numero(p.precio_referencial) - mas) : '—'}</td>` : ''}
           </tr>`; }).join('')}</tbody></table></div>`
-        : `<div class="panel__cuerpo"><p class="ayuda" style="margin:0">Todavía no hay paquetes.${
-            editable ? ' Créalos con “+ Nueva combinación” → Masaje + sauna.' : ''}</p></div>`}
-    </div>
+        : `<div class="panel__cuerpo"><p class="ayuda" style="margin:0">Todavía no hay combinaciones de masaje + sauna.${
+            editable ? ' Créalas con “+ Nueva combinación” → Masaje + sauna.' : ''}</p></div>`}
+    </div>`}
 
-    <div class="panel" style="margin-top:18px">
+    ${!editable && !saunas.length ? '' : `<div class="panel" style="margin-top:18px">
       <div class="panel__cabecera"><span class="eyebrow">Sauna sola · una persona a la vez · sin masajista</span></div>
       ${saunas.length ? `<div class="tabla-envoltura"><table class="a-tarjetas">
         <thead><tr><th>Servicio</th><th class="num">Precio</th></tr></thead>
@@ -147,7 +149,155 @@ function bloquesSaunaYPaquetes(todos, editable = false) {
         </table></div>`
         : `<div class="panel__cuerpo"><p class="ayuda" style="margin:0">El sauna todavía no tiene precio.${
             editable ? ' Créalo con “+ Nueva combinación” → Sauna.' : ''}</p></div>`}
+    </div>`}`;
+}
+
+// ---------------------------------------------------------------------------
+//  PAQUETES CON NOMBRE ("Ritual Pareja"…): tabla para tarifario y servicios
+// ---------------------------------------------------------------------------
+function bloquePaquetesConNombre(lista, editable = false) {
+  const activos = lista.filter(p => p.activo);
+  if (!editable && !activos.length) return '';
+  return `
+    <div class="panel" style="margin-top:18px">
+      <div class="panel__cabecera" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <span class="eyebrow">Paquetes</span>
+        ${editable ? '<button class="btn btn--suave" id="s-paquete" style="min-height:40px;padding:8px 14px">+ Nuevo paquete</button>' : ''}
+      </div>
+      ${activos.length ? `<div class="tabla-envoltura"><table class="a-tarjetas">
+        <thead><tr><th>Paquete</th><th>Para</th><th>Cada persona recibe</th><th class="num">Precio</th></tr></thead>
+        <tbody>${activos.map(p => `<tr${editable ? ` data-clic data-paquete="${p.id}"` : ''}>
+          <td class="destacado">${escapar(p.nombre)}${p.descripcion
+            ? `<br><small class="ayuda" style="font-weight:400">${escapar(p.descripcion)}</small>` : ''}</td>
+          <td data-etiqueta="Para">${p.personas === 2 ? '2 personas' : '1 persona'}</td>
+          <td data-etiqueta="Incluye">${escapar(describirPaquete(p))}</td>
+          <td class="num" data-etiqueta="Precio"><strong>${monto(p.precio)}</strong></td>
+        </tr>`).join('')}</tbody></table></div>`
+        : `<div class="panel__cuerpo"><p class="ayuda" style="margin:0">Todavía no hay paquetes con nombre.
+            Por ejemplo: “Ritual Pareja” = para 2 personas, cada una masaje 45' + sauna 30'.</p></div>`}
     </div>`;
+}
+
+function editarPaquete(p, { masajes, modalidades, duraciones }, servicios, recargar) {
+  const nuevo = !p;
+  p = p || { nombre: '', personas: 1, masaje_minutos: duraciones[0] ?? null, masaje_fijo: null,
+             modalidad_fija: null, sauna_minutos: SAUNA_MINUTOS, precio: '', descripcion: '' };
+  const opcion = (v, t, sel) => `<option value="${escapar(String(v))}" ${sel ? 'selected' : ''}>${escapar(String(t))}</option>`;
+
+  const cuerpo = abrirHoja(nuevo ? 'Nuevo paquete' : 'Editar paquete', `
+    <label class="campo"><span>Nombre del paquete</span>
+      <input type="text" id="pk-nombre" value="${escapar(p.nombre)}" placeholder="Ritual Pareja" autocomplete="off"></label>
+
+    <div class="campo"><span>¿Para cuántas personas?</span>
+      <div class="segmentos" id="pk-personas">
+        <button type="button" data-n="1" class="${p.personas === 1 ? 'activo' : ''}">1 persona</button>
+        <button type="button" data-n="2" class="${p.personas === 2 ? 'activo' : ''}">2 personas</button>
+      </div></div>
+
+    <p class="eyebrow" style="margin:4px 0 10px">Cada persona recibe</p>
+    <label class="casilla"><input type="checkbox" id="pk-con-masaje" ${p.masaje_minutos ? 'checked' : ''}>
+      <span>Masaje</span></label>
+    <div id="pk-masaje-caja">
+      <label class="campo"><span>Tiempo del masaje</span>
+        <select id="pk-minutos">${duraciones.map(d => opcion(d, d + "'", d === p.masaje_minutos)).join('')}</select></label>
+      <div class="fila">
+        <label class="campo"><span>Masaje</span>
+          <select id="pk-masaje">${opcion('', 'Se elige al registrar', !p.masaje_fijo)}
+            ${masajes.map(m => opcion(m, m, m === p.masaje_fijo)).join('')}</select></label>
+        <label class="campo"><span>Modalidad</span>
+          <select id="pk-modalidad">${opcion('', 'Se elige al registrar', !p.modalidad_fija)}
+            ${modalidades.map(m => opcion(m, m, m === p.modalidad_fija)).join('')}</select></label>
+      </div>
+      <p class="ayuda" id="pk-validos" style="margin:-8px 0 16px"></p>
+    </div>
+    <label class="casilla"><input type="checkbox" id="pk-con-sauna" ${p.sauna_minutos ? 'checked' : ''}>
+      <span>Sauna ${SAUNA_MINUTOS}' <small class="ayuda">(una persona a la vez: en pareja, por turnos)</small></span></label>
+
+    <label class="campo campo--monto" style="margin-top:8px"><span>Precio del paquete (total)</span>
+      <input type="number" id="pk-precio" step="0.5" min="0" inputmode="decimal" value="${p.precio}"></label>
+    <label class="campo"><span>Descripción <em style="text-transform:none;font-style:normal">(opcional)</em></span>
+      <input type="text" id="pk-desc" value="${escapar(p.descripcion || '')}" placeholder="Ideal para madre e hija, amigas…"></label>
+
+    <p class="error" id="pk-error" hidden></p>
+    <div class="barra-acciones" style="margin:0">
+      ${nuevo ? '' : '<button class="btn btn--peligro" id="pk-quitar" style="flex:1">Quitar del tarifario</button>'}
+      <button class="btn btn--principal" id="pk-guardar" style="flex:1.4">Guardar paquete</button>
+    </div>`);
+
+  const el = q => cuerpo.querySelector(q);
+  let personas = p.personas || 1;
+  el('#pk-personas').querySelectorAll('[data-n]').forEach(b => b.onclick = () => {
+    personas = Number(b.dataset.n);
+    el('#pk-personas').querySelectorAll('[data-n]').forEach(x => x.classList.toggle('activo', x === b));
+  });
+
+  const validos = () => servicios.filter(s => s.tipo === 'masaje' && s.activo
+    && s.duracion === Number(el('#pk-minutos').value)
+    && (!el('#pk-masaje').value || s.masaje === el('#pk-masaje').value)
+    && (!el('#pk-modalidad').value || s.modalidad === el('#pk-modalidad').value));
+
+  function refrescar() {
+    const conMasaje = el('#pk-con-masaje').checked;
+    el('#pk-masaje-caja').classList.toggle('oculto', !conMasaje);
+    if (!conMasaje) return;
+    if (!duraciones.length) { el('#pk-validos').textContent = 'Primero agrega una duración (+ Duración).'; return; }
+    const v = validos();
+    el('#pk-validos').innerHTML = v.length
+      ? `Masajes que se podrán elegir: ${v.map(s => escapar(`${s.masaje} (${s.modalidad})`)).join(', ')}.`
+      : `<span class="error">No hay masajes de ese tiempo con precio. Créalos primero en la tabla de masajes.</span>`;
+  }
+  ['#pk-con-masaje', '#pk-minutos', '#pk-masaje', '#pk-modalidad'].forEach(q => el(q).onchange = refrescar);
+  refrescar();
+
+  el('#pk-guardar').onclick = async e => {
+    const btn = e.currentTarget;
+    const err = el('#pk-error');
+    const fallo = t => { err.textContent = t; err.hidden = false; };
+    err.hidden = true;
+
+    const nombre = el('#pk-nombre').value.trim();
+    const conMasaje = el('#pk-con-masaje').checked;
+    const conSauna = el('#pk-con-sauna').checked;
+    const precio = numero(el('#pk-precio').value);
+    if (!nombre) return fallo('Escribe el nombre del paquete.');
+    if (!conMasaje && !conSauna) return fallo('El paquete debe incluir masaje, sauna o ambos.');
+    if (conMasaje && !validos().length) return fallo('No hay masajes de ese tiempo con precio para este paquete.');
+    if (el('#pk-precio').value === '' || !(precio >= 0)) return fallo('Escribe el precio del paquete.');
+
+    btn.disabled = true;
+    try {
+      await D.guardarPaquete({
+        id: p.id, nombre, personas,
+        masaje_minutos: conMasaje ? Number(el('#pk-minutos').value) : null,
+        masaje_fijo:    conMasaje ? (el('#pk-masaje').value || null) : null,
+        modalidad_fija: conMasaje ? (el('#pk-modalidad').value || null) : null,
+        sauna_minutos:  conSauna ? SAUNA_MINUTOS : null,
+        precio,
+        descripcion: el('#pk-desc').value.trim() || null,
+        activo: true
+      });
+      avisar('Paquete guardado', 'exito');
+      cerrarHoja(); recargar();
+    } catch (ex) {
+      const m = mensajeError(ex);
+      fallo(/uk_paquetes_nombre|duplicate/i.test(ex?.message || '') ? 'Ya existe un paquete con ese nombre.' : m);
+      btn.disabled = false;
+    }
+  };
+
+  const q = el('#pk-quitar');
+  if (q) q.onclick = async () => {
+    const ok = await confirmar({
+      titulo: 'Quitar paquete', peligro: true, aceptar: 'Quitar',
+      texto: 'Dejará de ofrecerse, pero las ventas ya guardadas de este paquete no cambian.'
+    });
+    if (!ok) return;
+    try {
+      await D.guardarPaquete({ id: p.id, activo: false });
+      avisar('Paquete quitado del tarifario', 'exito');
+      cerrarHoja(); recargar();
+    } catch (ex) { avisar(mensajeError(ex), 'error'); }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -162,6 +312,8 @@ export async function vistaServicios() {
     servicios = await D.servicios(false);
     listas = await D.listasCatalogo();
   } catch (ex) { v.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; return; }
+  let nombrados = [];
+  try { nombrados = await D.paquetes(false); } catch (_) {}
 
   const masajesActivos = servicios.filter(s => s.activo && s.tipo === 'masaje');
   const m = matriz(masajesActivos);
@@ -202,6 +354,7 @@ export async function vistaServicios() {
     : `<div class="panel"><div class="panel__cuerpo"><p class="ayuda" style="margin:0">
         Para armar la tabla de masajes agrega al menos un masaje, una modalidad y una duración
         con los botones de arriba. Si tus masajes solo cambian por el tiempo, crea una sola modalidad (por ejemplo “Normal”).</p></div></div>`}
+    ${bloquePaquetesConNombre(nombrados, true)}
     ${bloquesSaunaYPaquetes(servicios, true)}`;
 
   v.querySelectorAll('.celda').forEach(b => b.onclick = () => {
@@ -211,8 +364,12 @@ export async function vistaServicios() {
       duracion: Number(b.dataset.duracion), precio_referencial: '', terapeutas_requeridas: 1
     }, vistaServicios, servicios);
   });
-  v.querySelectorAll('tr[data-clic]').forEach(tr => tr.onclick = () =>
+  v.querySelectorAll('tr[data-clic][data-id]').forEach(tr => tr.onclick = () =>
     editarServicio(servicios.find(x => x.id === tr.dataset.id), vistaServicios, servicios));
+  const catalogo = { masajes, modalidades, duraciones };
+  v.querySelectorAll('tr[data-paquete]').forEach(tr => tr.onclick = () =>
+    editarPaquete(nombrados.find(x => x.id === tr.dataset.paquete), catalogo, servicios, vistaServicios));
+  $('#s-paquete').onclick = () => editarPaquete(null, catalogo, servicios, vistaServicios);
 
   $('#s-nuevo').onclick = () => nuevaCombinacion(servicios, { masajes, modalidades, duraciones });
 

@@ -96,7 +96,7 @@ let canal = null;
 const TABLAS = ['registros_servicios', 'registro_masajistas', 'clientes', 'masajistas',
                 'servicios', 'masajes', 'modalidades', 'duraciones', 'asistencias',
                 'cierres_diarios', 'ajustes_cierre', 'dias_cerrados', 'perfiles',
-                'dispositivos', 'auditoria', 'configuracion'];
+                'dispositivos', 'auditoria', 'configuracion', 'paquetes'];
 
 // Qué vistas dependen de qué tabla, para no repintar de más.
 const AFECTA = {
@@ -115,7 +115,8 @@ const AFECTA = {
   perfiles:            ['usuarios'],
   dispositivos:        ['usuarios'],
   auditoria:           ['auditoria'],
-  configuracion:       ['ajustes']
+  configuracion:       ['ajustes'],
+  paquetes:            ['tarifario', 'servicios']
 };
 
 let repintarPendiente = null;
