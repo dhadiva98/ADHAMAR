@@ -1,464 +1,285 @@
-/* ══════════════════════════════════════════════════════════════════════
-   ADHAMAR — clientes.js
-   Fichas, historial de visitas, corrección de nombres y fusión (§5.10).
+// ===========================================================================
+//  CLIENTES — ficha, corrección de nombre, fusión de duplicados
+//
+//  Los registros se relacionan por cliente_id, nunca por nombre: por eso
+//  corregir el nombre actualiza automáticamente todo el historial.
+// ===========================================================================
+import { esAdmin, fechaCorta, monto, escapar, mensajeError, esperar } from './core.js';
+import { $, abrirHoja, cerrarHoja, avisar, confirmar, esqueleto, vacio, autocompletar } from './ui.js';
+import * as D from './datos.js';
 
-   La idea que sostiene todo el módulo: los registros de servicio se
-   relacionan con el cliente POR ID, nunca por nombre. Por eso corregir
-   "cesar t" y dejarlo en "César Torres" arregla el historial completo,
-   los reportes y el autocompletado, sin perder ni una visita.
-   ══════════════════════════════════════════════════════════════════════ */
+export async function vistaClientes() {
+  const v = $('#vista');
+  v.innerHTML = `
+    <div class="barra-acciones">
+      <input type="search" id="c-buscar" placeholder="Buscar cliente…"
+             style="flex:1;min-width:200px;padding:13px 14px;border-radius:10px;font-size:16px;
+                    border:1.5px solid var(--borde-fuerte);background:var(--superficie);color:inherit">
+      ${esAdmin() ? '<button class="btn btn--neutro" id="c-duplicados">Posibles duplicados</button>' : ''}
+    </div>
+    <div id="c-lista">${esqueleto(6)}</div>`;
 
-import { esAdmin, crear, vaciar, traducirError } from './core.js';
-import {
-  clientes as traerClientes, cliente as traerCliente, buscarClientes,
-  crearCliente, actualizarCliente, marcarVip,
-  fusionarClientes, posiblesDuplicados, historialCliente
-} from './datos.js';
-import {
-  cabeceraVista, celda, esqueleto, vacio, abrirHoja, confirmar,
-  aviso, avisoError, campo, casilla, celdaMonto
-} from './ui.js';
-import { fechaCorta, unirMasajistas, plural, normalizar } from './formato.js';
+  const pintar = async (texto = '') => {
+    const caja = $('#c-lista');
+    try {
+      const lista = await D.clientes(texto);
+      caja.innerHTML = lista.length ? `
+        <div class="panel"><div class="tabla-envoltura"><table class="a-tarjetas">
+          <thead><tr><th></th><th>Nombre</th><th>Teléfono</th>
+            <th class="num">Visitas</th><th>Última visita</th></tr></thead>
+          <tbody>${lista.map(c => `<tr data-clic data-id="${c.id}">
+            <td style="width:30px">${c.vip ? '<span class="estrella">★</span>' : ''}</td>
+            <td class="destacado">${escapar(c.nombre || 'Sin nombre')}</td>
+            <td data-etiqueta="Teléfono">${c.telefono ? escapar(c.telefono) : '<span class="vacio">—</span>'}</td>
+            <td class="num" data-etiqueta="Visitas">${c.visitas}</td>
+            <td data-etiqueta="Última">${c.ultima_visita ? fechaCorta(c.ultima_visita) : '<span class="vacio">—</span>'}</td>
+          </tr>`).join('')}</tbody></table></div></div>`
+        : vacio(texto ? 'Ningún cliente con ese nombre.' : 'Todavía no hay clientes registrados.');
 
-export const tablas = ['clientes', 'registros_servicios'];
+      caja.querySelectorAll('tr[data-clic]').forEach(tr => tr.onclick = () =>
+        ficha(lista.find(c => c.id === tr.dataset.id)));
+    } catch (ex) { caja.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; }
+  };
 
-let contenedor = null;
-let lista = [];
-let filtro = '';
-
-/* ══════════════════════════════════════════════════════════════════════
-   VISTA
-   ══════════════════════════════════════════════════════════════════════ */
-
-export async function montar(donde) {
-  contenedor = donde;
-  await cargar();
-}
-
-export function desmontar() {
-  contenedor = null;
-  lista = [];
-}
-
-export async function refrescar() {
-  if (contenedor) await cargar({ silencioso: true });
-}
-
-async function cargar({ silencioso = false } = {}) {
-  if (!silencioso) vaciar(contenedor).appendChild(esqueleto(6));
-  lista = await traerClientes();
+  $('#c-buscar').oninput = esperar(e => pintar(e.target.value.trim()), 250);
+  const dup = $('#c-duplicados');
+  if (dup) dup.onclick = panelDuplicados;
   pintar();
 }
 
-function pintar() {
-  vaciar(contenedor);
+// ---------------------------------------------------------------------------
+async function ficha(c) {
+  const cuerpo = abrirHoja(c.nombre || 'Cliente', `
+    <div class="tarifa" style="margin-bottom:18px">
+      <div class="tarifa__linea"><span>Teléfono</span><span>${c.telefono ? escapar(c.telefono) : '—'}</span></div>
+      <div class="tarifa__linea"><span>Visitas</span><span>${c.visitas}</span></div>
+      <div class="tarifa__linea"><span>Última visita</span><span>${c.ultima_visita ? fechaCorta(c.ultima_visita) : '—'}</span></div>
+      <div class="tarifa__linea"><span>VIP</span><span>${c.vip ? 'Sí ★' : 'No'}</span></div>
+    </div>
+    ${c.observaciones ? `<div class="panel" style="margin-bottom:18px"><div class="panel__cuerpo">
+      <span class="eyebrow">Observaciones</span><p style="margin:8px 0 0">${escapar(c.observaciones)}</p>
+    </div></div>` : ''}
+    <div class="barra-acciones">
+      <button class="btn btn--neutro" id="c-editar" style="flex:1">Editar datos</button>
+      ${esAdmin() ? '<button class="btn btn--neutro" id="c-fusionar" style="flex:1">Fusionar</button>' : ''}
+    </div>
+    <span class="eyebrow" style="margin:6px 0 10px">Historial de visitas</span>
+    <div id="c-hist">${esqueleto(3)}</div>`);
 
-  const acciones = [
-    { texto: '+ Nuevo cliente', tipo: 'primario', al: nuevoCliente }
-  ];
-  if (esAdmin()) {
-    acciones.push({ texto: 'Posibles duplicados', al: abrirDuplicados });
-    acciones.push({ texto: 'Fusionar dos clientes', al: () => abrirFusion() });
-  }
-  contenedor.appendChild(cabeceraVista('Clientes', acciones));
+  cuerpo.querySelector('#c-editar').onclick = () => editar(c);
+  const f = cuerpo.querySelector('#c-fusionar');
+  if (f) f.onclick = () => fusionar(c);
 
-  /* Buscador local: la lista completa ya está en memoria, así que filtrar
-     aquí es instantáneo. La búsqueda difusa de la base se usa en los
-     campos de registro, donde sí hace falta tolerar errores de tipeo. */
-  const { campo: cBuscar, entrada: eBuscar } = campo('Buscar', {
-    tipo: 'search',
-    valor: filtro,
-    atributos: { placeholder: 'Nombre o teléfono' }
-  });
-  eBuscar.addEventListener('input', () => {
-    filtro = eBuscar.value;
-    pintarTabla();
-  });
-  contenedor.appendChild(cBuscar);
-
-  contenedor.appendChild(crear('div', { atributos: { id: 'lista-clientes' } }));
-  pintarTabla();
-}
-
-function filtrados() {
-  if (!filtro.trim()) return lista;
-  const q = normalizar(filtro);
-  return lista.filter((c) =>
-    normalizar(c.nombre).includes(q) || String(c.telefono || '').includes(filtro.trim())
-  );
-}
-
-function pintarTabla() {
-  const caja = vaciar(contenedor.querySelector('#lista-clientes'));
-  const datos = filtrados();
-
-  if (!datos.length) {
-    caja.appendChild(vacio(
-      filtro ? 'Ningún cliente coincide' : 'Todavía no hay clientes',
-      filtro ? 'Prueba con otra parte del nombre.' : 'Se van creando solos al registrar servicios.'
-    ));
-    return;
-  }
-
-  const envoltura = crear('div', { clase: 'tabla-envoltura a-tarjetas' });
-  const tabla = crear('table', { clase: 'tabla' });
-
-  const thead = crear('thead');
-  const tr = crear('tr');
-  ['', 'Nombre', 'Teléfono', 'Visitas', 'Última visita'].forEach((t, i) => {
-    tr.appendChild(crear('th', { texto: t, clase: i === 3 ? 'derecha' : '' }));
-  });
-  thead.appendChild(tr);
-  tabla.appendChild(thead);
-
-  const tbody = crear('tbody');
-  datos.forEach((c) => {
-    const fila = crear('tr', { datos: { abrible: 'si' } });
-    fila.addEventListener('click', () => abrirFicha(c.id));
-
-    const tdVip = crear('td');
-    if (c.vip) tdVip.appendChild(crear('span', { clase: 'vip', texto: '★', atributos: { title: 'Cliente VIP' } }));
-    fila.appendChild(tdVip);
-
-    fila.appendChild(celda(c.nombre, { vacio: 'Sin nombre' }));
-    fila.appendChild(celda(c.telefono));
-    fila.appendChild(celda(String(c.visitas ?? 0), { clase: 'monto' }));
-    fila.appendChild(celda(c.ultima_visita ? fechaCorta(c.ultima_visita) : null));
-
-    tbody.appendChild(fila);
-  });
-  tabla.appendChild(tbody);
-  envoltura.appendChild(tabla);
-  caja.appendChild(envoltura);
-
-  const tarjetas = crear('div', { clase: 'lista-tarjetas' });
-  datos.forEach((c) => {
-    const t = crear('div', { clase: 'tarjeta-fila' });
-    t.addEventListener('click', () => abrirFicha(c.id));
-    t.appendChild(crear('span', { clase: 'hora', texto: c.vip ? '★' : '' }));
-    t.appendChild(crear('span', { clase: 'cliente', texto: c.nombre || 'Sin nombre' }));
-    t.appendChild(crear('span', { clase: 'sugerencia-dato', texto: plural(c.visitas ?? 0, 'visita', 'visitas') }));
-    t.appendChild(crear('span', {
-      clase: 'detalle',
-      texto: [c.telefono, c.ultima_visita ? `Última: ${fechaCorta(c.ultima_visita)}` : null]
-        .filter(Boolean).join(' · ') || 'Sin datos adicionales'
-    }));
-    tarjetas.appendChild(t);
-  });
-  caja.appendChild(tarjetas);
-
-  caja.appendChild(crear('p', {
-    clase: 'pie-agenda',
-    texto: plural(datos.length, 'cliente', 'clientes')
-  }));
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   FICHA
-   ══════════════════════════════════════════════════════════════════════ */
-
-export async function abrirFicha(id) {
-  let c;
   try {
-    c = await traerCliente(id);
-  } catch (e) {
-    avisoError(e.amable ? e.message : traducirError(e));
-    return;
+    const regs = await D.historialCliente(c.id);
+    cuerpo.querySelector('#c-hist').innerHTML = regs.length ? `
+      <div class="panel"><div class="tabla-envoltura"><table>
+        <thead><tr><th>Fecha</th><th>Servicio</th><th>Masajista</th>
+          <th class="num">Ref.</th><th class="num">Desc.</th><th class="num">Cobrado</th><th>Pago</th></tr></thead>
+        <tbody>${regs.map(r => `<tr>
+          <td>${fechaCorta(r.fecha)}</td>
+          <td>${escapar(r.servicio?.nombre_completo || r.servicio_nombre_snapshot || '—')}</td>
+          <td>${escapar((r.masajistas || []).map(m => m.masajista && !m.masajista.eliminada
+                ? m.masajista.nombre : m.masajista_nombre_snapshot).join(' | ') || '—')}</td>
+          <td class="num">${monto(r.precio_referencial)}</td>
+          <td class="num">${Number(r.descuento) > 0 ? '−' + monto(r.descuento) : '—'}</td>
+          <td class="num"><strong>${monto(r.precio_cobrado)}</strong></td>
+          <td>${r.forma_pago || '<span class="vacio">—</span>'}</td>
+        </tr>`).join('')}</tbody></table></div></div>`
+      : '<p class="ayuda">Todavía no tiene visitas registradas.</p>';
+  } catch (ex) {
+    cuerpo.querySelector('#c-hist').innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`;
   }
+}
 
-  const cuerpo = crear('div');
+// Corregir el nombre actualiza todo el historial sin perder visitas.
+function editar(c) {
+  const cuerpo = abrirHoja('Editar cliente', `
+    <label class="campo"><span>Nombre</span>
+      <input type="text" id="ce-nombre" value="${escapar(c.nombre || '')}"></label>
+    <label class="campo"><span>Teléfono</span>
+      <input type="tel" id="ce-tel" value="${escapar(c.telefono || '')}"></label>
+    <label class="casilla"><input type="checkbox" id="ce-vip" ${c.vip ? 'checked' : ''}>
+      <span>Cliente VIP (solo una marca visual, no cambia precios)</span></label>
+    <label class="campo"><span>Observaciones</span>
+      <textarea id="ce-obs">${escapar(c.observaciones || '')}</textarea></label>
+    <button class="btn btn--principal btn--bloque" id="ce-guardar">Guardar cambios</button>`);
 
-  const datos = crear('div', { clase: 'tarjeta' });
-  [
-    ['Nombre', c.nombre || 'Sin nombre'],
-    ['Teléfono', c.telefono],
-    ['Visitas', String(c.visitas ?? 0)],
-    ['Última visita', c.ultima_visita ? fechaCorta(c.ultima_visita) : null],
-    ['Registrado', fechaCorta(c.created_at)],
-    ['Observaciones', c.observaciones]
-  ].forEach(([etiqueta, valor]) => {
-    const linea = crear('div', { clase: 'linea-calculo' });
-    linea.appendChild(crear('span', { texto: etiqueta }));
-    linea.appendChild(valor
-      ? crear('span', { texto: valor })
-      : crear('span', { clase: 'dato-faltante', texto: '—' }));
-    datos.appendChild(linea);
-  });
-  cuerpo.appendChild(datos);
+  cuerpo.querySelector('#ce-guardar').onclick = async () => {
+    const nombreNuevo = cuerpo.querySelector('#ce-nombre').value.trim();
+    const datos = {
+      id: c.id,
+      nombre: nombreNuevo || null,
+      telefono: cuerpo.querySelector('#ce-tel').value.trim() || null,
+      vip: cuerpo.querySelector('#ce-vip').checked,
+      observaciones: cuerpo.querySelector('#ce-obs').value.trim() || null
+    };
 
-  /* VIP: solo una señal visual. No aplica descuentos automáticos (§5.10). */
-  const { casilla: cVip, entrada: eVip } = casilla('Cliente VIP', Boolean(c.vip));
-  eVip.disabled = !esAdmin();
-  cVip.appendChild(crear('span', {
-    clase: 'campo-ayuda',
-    texto: esAdmin()
-      ? 'Solo aparece como estrella en la agenda. No cambia ningún precio.'
-      : 'Solo aparece como estrella en la agenda. Lo marca administración.'
-  }));
-  eVip.addEventListener('change', async () => {
-    try {
-      await marcarVip(c.id, eVip.checked);
-      aviso(eVip.checked ? 'Marcado como VIP' : 'Ya no es VIP');
-      await refrescar();
-    } catch (e) {
-      eVip.checked = !eVip.checked;
-      avisoError(e.amable ? e.message : traducirError(e));
+    // Corregir un nombre mal escrito suele significar que ya existe la
+    // persona bien escrita. Si no se avisa aquí, quedan dos fichas idénticas
+    // y el historial de esa persona se parte en dos.
+    if (nombreNuevo && nombreNuevo !== c.nombre) {
+      const gemelo = await buscarGemelo(nombreNuevo, c.id);
+      if (gemelo) return proponerUnir(c, gemelo, datos);
     }
-  });
-  cuerpo.appendChild(cVip);
 
-  cuerpo.appendChild(crear('p', { clase: 'campo-etiqueta', texto: 'Historial de visitas', atributos: { style: 'margin-top:20px' } }));
-  const cajaHistorial = crear('div');
-  cajaHistorial.appendChild(esqueleto(3, { conTitulo: false }));
-  cuerpo.appendChild(cajaHistorial);
-
-  /* Corregir un cliente es solo de administración: así lo dicen también
-     las policies. Mostrarle el botón a Recepción solo serviría para que
-     se llevara un "no tienes permiso" después de escribirlo todo. */
-  const acciones = esAdmin()
-    ? [{ texto: 'Editar', tipo: 'primario', al: ({ cerrar }) => editarFicha(c, cerrar) }]
-    : [];
-
-  abrirHoja({ titulo: c.nombre || 'Cliente', contenido: cuerpo, acciones });
-
-  /* El historial se trae después de abrir la hoja: la ficha aparece de
-     inmediato y las visitas se completan solas. */
-  try {
-    const visitas = await historialCliente(c.id);
-    vaciar(cajaHistorial);
-    if (!visitas.length) {
-      cajaHistorial.appendChild(crear('p', { clase: 'campo-ayuda', texto: 'Todavía no tiene visitas registradas.' }));
-      return;
-    }
-    const envoltura = crear('div', { clase: 'tabla-envoltura' });
-    const tabla = crear('table', { clase: 'tabla' });
-    const thead = crear('thead');
-    const tr = crear('tr');
-    ['Fecha', 'Servicio', 'Srta.', 'Desc.', 'Cobrado'].forEach((t, i) =>
-      tr.appendChild(crear('th', { texto: t, clase: i >= 3 ? 'derecha' : '' })));
-    thead.appendChild(tr);
-    tabla.appendChild(thead);
-    const tbody = crear('tbody');
-    visitas.forEach((v) => {
-      const fila = crear('tr');
-      fila.appendChild(celda(fechaCorta(v.fecha)));
-      fila.appendChild(celda(v.servicioNombre));
-      fila.appendChild(celda(unirMasajistas(v.nombresMasajistas)));
-      fila.appendChild(Number(v.descuento) > 0 ? celdaMonto(v.descuento) : celda(null, { clase: 'monto' }));
-      fila.appendChild(celdaMonto(v.precio_cobrado));
-      tbody.appendChild(fila);
-    });
-    tabla.appendChild(tbody);
-    envoltura.appendChild(tabla);
-    cajaHistorial.appendChild(envoltura);
-  } catch (e) {
-    vaciar(cajaHistorial).appendChild(
-      crear('p', { clase: 'campo-ayuda texto-error', texto: 'No se pudo cargar el historial de visitas.' })
-    );
-  }
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   CREAR Y EDITAR
-   ══════════════════════════════════════════════════════════════════════ */
-
-async function nuevoCliente() {
-  const caja = crear('div');
-  const { campo: c1, entrada: eNombre } = campo('Nombre', { atributos: { autocapitalize: 'words' } });
-  const { campo: c2, entrada: eTelefono } = campo('Teléfono (opcional)', { tipo: 'tel', atributos: { inputmode: 'tel' } });
-  caja.append(c1, c2);
-
-  const ok = await confirmar({ titulo: 'Nuevo cliente', extra: caja, aceptar: 'Crear' });
-  if (!ok) return;
-
-  const nombre = eNombre.value.trim();
-  if (!nombre) { avisoError('Escribe al menos el nombre.'); return; }
-
-  /* Antes de crear, avisar si se parece mucho a uno existente (§5.5).
-     No se bloquea la creación: se obliga a pasar por la advertencia. */
-  const parecido = await buscarParecido(nombre);
-  if (parecido) {
-    const esElMismo = await confirmar({
-      titulo: `¿Te refieres a ${parecido.nombre}?`,
-      texto: `Ya existe con ${plural(parecido.visitas ?? 0, 'visita', 'visitas')} registradas.`,
-      aceptar: 'Sí, abrir ese cliente',
-      cancelar: 'No, crear uno nuevo'
-    });
-    if (esElMismo) { abrirFicha(parecido.id); return; }
-  }
-
-  try {
-    const nuevo = await crearCliente({ nombre, telefono: eTelefono.value.trim() || null });
-    aviso(`Cliente "${nuevo.nombre}" creado`);
-    await refrescar();
-    abrirFicha(nuevo.id);
-  } catch (e) {
-    avisoError(e.amable ? e.message : traducirError(e));
-  }
-}
-
-async function editarFicha(c, cerrarHoja) {
-  const caja = crear('div');
-  const { campo: c1, entrada: eNombre } = campo('Nombre', { valor: c.nombre || '' });
-  const { campo: c2, entrada: eTelefono } = campo('Teléfono', { tipo: 'tel', valor: c.telefono || '' });
-  const { campo: c3, entrada: eObs } = campo('Observaciones', { multilinea: true, valor: c.observaciones || '' });
-  caja.append(c1, c2, c3);
-
-  const ok = await confirmar({ titulo: 'Editar cliente', extra: caja, aceptar: 'Guardar' });
-  if (!ok) return;
-
-  const nombre = eNombre.value.trim();
-  if (!nombre) { avisoError('El nombre no puede quedar vacío.'); return; }
-
-  /* R13 — corregir un nombre debe detectar si ya existe otro igual y
-     ofrecer unir, en vez de crear un duplicado silencioso. Con salida por
-     si de verdad son dos personas distintas. */
-  if (normalizar(nombre) !== normalizar(c.nombre || '')) {
-    const otro = await buscarParecido(nombre, c.id);
-    if (otro && normalizar(otro.nombre) === normalizar(nombre)) {
-      const unir = await confirmar({
-        titulo: 'Ya existe un cliente con ese nombre',
-        texto: `${otro.nombre} tiene ${plural(otro.visitas ?? 0, 'visita', 'visitas')}. ¿Son la misma persona?`,
-        aceptar: 'Sí, unirlos',
-        cancelar: 'No, son distintas'
-      });
-      if (unir) {
-        cerrarHoja?.();
-        await ejecutarFusion(otro.id, c.id);
-        return;
-      }
-    }
-  }
-
-  try {
-    await actualizarCliente(c.id, {
-      nombre,
-      telefono: eTelefono.value.trim() || null,
-      observaciones: eObs.value.trim() || null
-    });
-    /* Como los registros apuntan al id, esto propaga a todo el historial,
-       los reportes y el autocompletado, conservando visitas y fecha de
-       registro. Y queda en auditoría. */
-    aviso('Cliente actualizado');
-    cerrarHoja?.();
-    await refrescar();
-  } catch (e) {
-    avisoError(e.amable ? e.message : traducirError(e));
-  }
-}
-
-async function buscarParecido(nombre, excluirId = null) {
-  try {
-    const filas = await buscarClientes(nombre, 3);
-    return filas.find((c) => c.id !== excluirId && Number(c.similitud ?? 0) > 0.6) || null;
-  } catch (e) {
-    return null;
-  }
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   FUSIÓN DE DUPLICADOS  [admin]
-   ══════════════════════════════════════════════════════════════════════ */
-
-async function abrirFusion(idConservar = null, idAbsorber = null) {
-  const caja = crear('div');
-
-  const selConservar = crear('select');
-  const selAbsorber = crear('select');
-  lista.forEach((c) => {
-    const texto = `${c.nombre} — ${plural(c.visitas ?? 0, 'visita', 'visitas')}`;
-    selConservar.appendChild(crear('option', { texto, atributos: { value: c.id } }));
-    selAbsorber.appendChild(crear('option', { texto, atributos: { value: c.id } }));
-  });
-  if (idConservar) selConservar.value = idConservar;
-  if (idAbsorber) selAbsorber.value = idAbsorber;
-
-  const c1 = crear('label', { clase: 'campo' });
-  c1.append(crear('span', { clase: 'campo-etiqueta', texto: 'Cliente que se conserva' }), selConservar);
-  const c2 = crear('label', { clase: 'campo' });
-  c2.append(crear('span', { clase: 'campo-etiqueta', texto: 'Cliente que se absorbe' }), selAbsorber);
-
-  const resultado = crear('p', { clase: 'campo-ayuda' });
-  const actualizar = () => {
-    const a = lista.find((x) => x.id === selConservar.value);
-    const b = lista.find((x) => x.id === selAbsorber.value);
-    resultado.textContent = (a && b && a.id !== b.id)
-      ? `Resultado: ${a.nombre} — ${(a.visitas ?? 0) + (b.visitas ?? 0)} visitas. Se reasignarán los registros de ${b.nombre}.`
-      : 'Elige dos clientes distintos.';
+    await aplicar(datos);
   };
-  selConservar.addEventListener('change', actualizar);
-  selAbsorber.addEventListener('change', actualizar);
-  actualizar();
 
-  caja.append(c1, c2, resultado, crear('p', {
-    clase: 'campo-ayuda texto-error',
-    texto: 'Esta acción no se puede deshacer desde la interfaz.'
-  }));
-
-  const ok = await confirmar({
-    titulo: 'Fusionar clientes',
-    extra: caja,
-    aceptar: 'Fusionar',
-    peligro: true
-  });
-  if (!ok) return;
-  if (selConservar.value === selAbsorber.value) {
-    avisoError('Elige dos clientes distintos.');
-    return;
-  }
-  await ejecutarFusion(selConservar.value, selAbsorber.value);
-}
-
-async function ejecutarFusion(conservar, absorber) {
-  try {
-    /* Función transaccional en el servidor: reasigna registros, recalcula
-       visitas, anexa observaciones y marca el absorbido como fusionado.
-       Si fallara a mitad no puede quedar el historial partido. */
-    await fusionarClientes(conservar, absorber);
-    aviso('Clientes fusionados');
-    await refrescar();
-  } catch (e) {
-    avisoError(e.amable ? e.message : traducirError(e));
+  async function aplicar(datos) {
+    try {
+      await D.guardarCliente(datos);
+      avisar('Cliente actualizado', 'exito');
+      cerrarHoja();
+      vistaClientes();
+    } catch (ex) { avisar(mensajeError(ex), 'error'); }
   }
 }
 
-/** Panel que lista automáticamente los pares con nombres muy parecidos. */
-async function abrirDuplicados() {
-  const cuerpo = crear('div');
-  cuerpo.appendChild(esqueleto(4, { conTitulo: false }));
-
-  abrirHoja({ titulo: 'Posibles duplicados', contenido: cuerpo });
-
+// Busca un cliente distinto cuyo nombre normalizado sea idéntico.
+// Solo coincidencia exacta: para los parecidos ya está "Posibles duplicados".
+async function buscarGemelo(nombre, propioId) {
   try {
-    const pares = await posiblesDuplicados();
-    vaciar(cuerpo);
+    const norm = s => (s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                        .toLowerCase().replace(/\s+/g, ' ').trim();
+    const objetivo = norm(nombre);
+    const hallados = await D.buscarClientes(nombre);
+    return hallados.find(x => x.id !== propioId && norm(x.nombre) === objetivo) || null;
+  } catch { return null; }   // si la búsqueda falla, no bloqueamos el guardado
+}
 
-    if (!pares.length) {
-      cuerpo.appendChild(vacio('No se detectaron duplicados', 'Los nombres registrados son suficientemente distintos entre sí.'));
-      return;
+// Ofrece unir en lugar de crear un duplicado. Deja salida por si de verdad
+// son dos personas distintas con el mismo nombre.
+function proponerUnir(actual, gemelo, datos) {
+  const cuerpo = abrirHoja('Ya existe alguien con ese nombre', `
+    <p class="ayuda" style="margin:0 0 18px">
+      Al corregir el nombre, esta ficha queda igual que otra que ya existe.
+      Si son la misma persona, únelas: el historial se junta y no se pierde
+      ninguna visita.</p>
+
+    <div class="tarifa" style="margin-bottom:8px">
+      <div class="tarifa__linea"><span>Ficha que estás editando</span>
+        <b>${escapar(actual.nombre || '—')}</b></div>
+      <div class="tarifa__linea"><span>Visitas</span>
+        <b>${actual.visitas ?? 0}</b></div>
+    </div>
+    <div class="tarifa" style="margin-bottom:18px">
+      <div class="tarifa__linea"><span>Ficha que ya existía</span>
+        <b>${escapar(gemelo.nombre)}</b></div>
+      <div class="tarifa__linea"><span>Visitas</span>
+        <b>${gemelo.visitas ?? 0}</b></div>
+      <div class="tarifa__linea"><span>Teléfono</span>
+        <b>${escapar(gemelo.telefono || '—')}</b></div>
+    </div>
+
+    <button class="btn btn--principal btn--bloque" id="pu-unir">
+      Unir en una sola ficha</button>
+    <button class="btn btn--neutro btn--bloque" id="pu-separado" style="margin-top:10px">
+      Son personas distintas, guardar por separado</button>`);
+
+  // Se conserva la ficha con más visitas: la otra se absorbe.
+  const propias = actual.visitas ?? 0, ajenas = gemelo.visitas ?? 0;
+  const [conservar, absorber] = propias >= ajenas
+    ? [actual.id, gemelo.id] : [gemelo.id, actual.id];
+
+  cuerpo.querySelector('#pu-unir').onclick = async () => {
+    try {
+      // Primero se corrige el nombre, para que la ficha que sobreviva
+      // quede bien escrita aunque la que se conserve sea la otra.
+      await D.guardarCliente(datos);
+      const r = await D.fusionarClientes(conservar, absorber);
+      avisar(`Unidas. Se movieron ${r.registros_movidos} registros.`, 'exito');
+      cerrarHoja();
+      vistaClientes();
+    } catch (ex) { avisar(mensajeError(ex), 'error'); }
+  };
+
+  cuerpo.querySelector('#pu-separado').onclick = async () => {
+    try {
+      await D.guardarCliente(datos);
+      avisar('Guardado como ficha separada', 'exito');
+      cerrarHoja();
+      vistaClientes();
+    } catch (ex) { avisar(mensajeError(ex), 'error'); }
+  };
+}
+
+// ---------------------------------------------------------------------------
+//  Fusión: reasigna todos los registros y no borra nada físicamente.
+// ---------------------------------------------------------------------------
+function fusionar(conservar) {
+  const cuerpo = abrirHoja('Fusionar clientes', `
+    <div class="tarifa" style="margin-bottom:18px">
+      <div class="tarifa__linea"><span>Se conserva</span>
+        <span>${escapar(conservar.nombre || '—')} · ${conservar.visitas} visitas</span></div>
+    </div>
+    <div id="fu-absorber"></div>
+    <div id="fu-resultado"></div>
+    <p class="error">Esta acción no se puede deshacer desde la aplicación.</p>
+    <button class="btn btn--principal btn--bloque" id="fu-ok" disabled>Fusionar</button>`);
+
+  let absorber = null;
+  autocompletar({
+    contenedor: cuerpo.querySelector('#fu-absorber'),
+    etiqueta: 'Cliente que se absorbe', requerido: true,
+    buscar: async t => (await D.buscarClientes(t)).filter(c => c.id !== conservar.id),
+    pintar: c => ({ titulo: c.nombre || 'Sin nombre', nota: `${c.visitas} visitas` }),
+    alElegir: c => {
+      absorber = c;
+      cuerpo.querySelector('#fu-ok').disabled = !c;
+      cuerpo.querySelector('#fu-resultado').innerHTML = c ? `
+        <div class="tarifa" style="margin-bottom:18px">
+          <div class="tarifa__linea tarifa__linea--total"><span>Resultado</span>
+            <span>${escapar(conservar.nombre)} · ${conservar.visitas + c.visitas} visitas</span></div>
+          <div class="tarifa__linea"><span>Registros que se mueven</span><span>${c.visitas}</span></div>
+        </div>` : '';
     }
+  });
 
-    pares.forEach((p) => {
-      const tarjeta = crear('div', { clase: 'tarjeta' });
-      tarjeta.appendChild(crear('p', {
-        clase: 'titulo-tarjeta',
-        texto: `${p.nombre_a}  ·  ${p.nombre_b}`
-      }));
-      tarjeta.appendChild(crear('p', {
-        clase: 'campo-ayuda',
-        texto: `${plural(p.visitas_a ?? 0, 'visita', 'visitas')} y ${plural(p.visitas_b ?? 0, 'visita', 'visitas')}. Parecido: ${Math.round((p.similitud || 0) * 100)}%`
-      }));
-      tarjeta.appendChild(crear('button', {
-        clase: 'boton-secundario',
-        texto: 'Revisar y fusionar',
-        atributos: { type: 'button', style: 'width:auto;margin-top:10px' },
-        al: { click: () => abrirFusion(p.id_a, p.id_b) }
-      }));
-      cuerpo.appendChild(tarjeta);
+  cuerpo.querySelector('#fu-ok').onclick = async () => {
+    if (!absorber) return;
+    try {
+      const r = await D.fusionarClientes(conservar.id, absorber.id);
+      avisar(`Fusionado. Se movieron ${r.registros_movidos} registros.`, 'exito');
+      cerrarHoja(); vistaClientes();
+    } catch (ex) { avisar(mensajeError(ex), 'error'); }
+  };
+}
+
+// ---------------------------------------------------------------------------
+//  Panel de posibles duplicados: los detecta el servidor por similitud.
+// ---------------------------------------------------------------------------
+async function panelDuplicados() {
+  const cuerpo = abrirHoja('Posibles duplicados', esqueleto(4));
+  try {
+    const pares = await D.duplicadosCliente();
+    cuerpo.innerHTML = pares.length ? `
+      <p class="ayuda" style="margin-bottom:16px">Nombres muy parecidos. Revisa antes de unirlos.</p>
+      ${pares.map((p, i) => `
+        <div class="panel" style="margin-bottom:12px"><div class="panel__cuerpo">
+          <div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap">
+            <span><strong>${escapar(p.nombre_a)}</strong> · ${p.visitas_a} visitas</span>
+            <span><strong>${escapar(p.nombre_b)}</strong> · ${p.visitas_b} visitas</span>
+          </div>
+          <button class="btn btn--suave btn--bloque" style="margin-top:12px" data-par="${i}">
+            Unir en “${escapar(p.visitas_a >= p.visitas_b ? p.nombre_a : p.nombre_b)}”</button>
+        </div></div>`).join('')}`
+      : vacio('No se encontraron nombres parecidos. La base está limpia.');
+
+    cuerpo.querySelectorAll('[data-par]').forEach(b => b.onclick = async () => {
+      const p = pares[Number(b.dataset.par)];
+      const [con, abs] = p.visitas_a >= p.visitas_b
+        ? [p.id_a, p.id_b] : [p.id_b, p.id_a];
+      const ok = await confirmar({
+        titulo: 'Unir clientes', aceptar: 'Unir',
+        texto: `Todos los masajes pasarán a un solo cliente. No se borra nada, pero no se puede deshacer.`
+      });
+      if (!ok) return;
+      try {
+        const r = await D.fusionarClientes(con, abs);
+        avisar(`Unidos. Se movieron ${r.registros_movidos} registros.`, 'exito');
+        panelDuplicados();
+      } catch (ex) { avisar(mensajeError(ex), 'error'); }
     });
-  } catch (e) {
-    vaciar(cuerpo).appendChild(
-      vacio('No se pudo revisar', e.amable ? e.message : 'Vuelve a intentarlo en unos segundos.')
-    );
-  }
+  } catch (ex) { cuerpo.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; }
 }

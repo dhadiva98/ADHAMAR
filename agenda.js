@@ -1,311 +1,305 @@
-/* ══════════════════════════════════════════════════════════════════════
-   ADHAMAR — agenda.js
-   La pantalla principal (§5.1). No es un tablero de métricas: es la lista
-   de lo que pasa hoy, en orden de hora, donde conviven las reservas
-   pendientes y los servicios ya realizados.
+// ===========================================================================
+//  AGENDA DEL DÍA — pantalla principal de trabajo
+//  Lista de las atenciones del día, en orden de hora, donde conviven
+//  reservas pendientes y servicios ya realizados.
+// ===========================================================================
+import { estado, esAdmin, hoy, fechaCorta, fechaLarga, hora12, sumarMinutos,
+         monto, escapar, mensajeError, sumarDias } from './core.js';
+import { $, abrirHoja, cerrarHoja, avisar, confirmar, esqueleto, vacio } from './ui.js';
+import * as D from './datos.js';
+import { formularioServicio, reservaRapida } from './registro.js';
 
-   El pie es condicional al rol: Recepción ve el conteo de atenciones; el
-   Administrador ve además el total del día.
-   ══════════════════════════════════════════════════════════════════════ */
+let seleccion = new Set();
 
-import { estado, esAdmin, crear, vaciar, $ } from './core.js';
-import { agendaDia } from './datos.js';
-import {
-  cabeceraVista, pastilla, celda, celdaMonto, esqueleto, vacio, confirmar
-} from './ui.js';
-import {
-  hoy, sumarDias, fechaLarga, diaRelativo, hora12, horaFin,
-  soles, unirMasajistas, duracion, plural
-} from './formato.js';
+// --- Nombre resuelto: vivo si existe, snapshot si fue eliminada -------------
+const nombreServicio = r => r.servicio?.nombre_completo || r.servicio_nombre_snapshot || null;
 
-/* Realtime repinta esta vista solo si cambia alguna de estas tablas. */
-export const tablas = [
-  'registros_servicios', 'registro_masajistas', 'pagos_registro', 'clientes'
-];
+const nombreMasajistas = r => {
+  const ms = (r.masajistas || []).sort((a, b) => a.orden - b.orden);
+  if (!ms.length) return null;
+  return ms.map(m => m.masajista && !m.masajista.eliminada
+    ? `${m.masajista.nombre} ${m.masajista.apellido || ''}`.trim()
+    : m.masajista_nombre_snapshot).join(' | ');
+};
 
-let contenedor = null;
-let fecha = hoy();
-let registros = [];
+const nombreCliente = r => r.cliente?.nombre || r.cliente_texto || null;
 
-/* ══════════════════════════════════════════════════════════════════════
-   MONTAJE
-   ══════════════════════════════════════════════════════════════════════ */
+// Los datos faltantes se muestran como "—" en gris, nunca como cero falso.
+const oFalta = (v, clase = 'vacio') => v ? escapar(v) : `<span class="${clase}">—</span>`;
 
-export async function montar(donde, opciones = {}) {
-  contenedor = donde;
-  fecha = opciones.fecha || hoy();
-  await cargar();
-}
+// ===========================================================================
+export async function vistaAgenda(fecha = estado.fecha) {
+  estado.fecha = fecha;
+  const v = $('#vista');
+  v.innerHTML = barra(fecha) + esqueleto(6);
+  conectarBarra(fecha);
 
-export function desmontar() {
-  contenedor = null;
-  registros = [];
-}
-
-export async function refrescar() {
-  if (!contenedor) return;
-  await cargar({ silencioso: true });
-}
-
-async function cargar({ silencioso = false } = {}) {
-  if (!silencioso) vaciar(contenedor).appendChild(esqueleto(6));
-  registros = await agendaDia(fecha);
-  pintar();
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   PINTADO
-   ══════════════════════════════════════════════════════════════════════ */
-
-function pintar() {
-  vaciar(contenedor);
-
-  contenedor.appendChild(cabeceraVista(
-    fecha === hoy() ? 'Agenda del día' : `Agenda · ${diaRelativo(fecha)}`,
-    [
-      { texto: '+ Nuevo', tipo: 'primario', al: () => abrirRegistro() },
-      { texto: 'Ver próximas reservas', al: verProximas },
-      { texto: 'Ver otro día', al: elegirOtroDia }
-    ]
-  ));
-
-  contenedor.appendChild(barraFecha());
-
-  if (!registros.length) {
-    contenedor.appendChild(vacio(
-      fecha === hoy() ? 'Todavía no hay nada anotado hoy' : 'No hay nada anotado ese día',
-      'Cuando registres un masaje o anotes una reserva, aparecerá aquí.',
-      { texto: 'Registrar un servicio', al: () => abrirRegistro() }
-    ));
-    return;
+  try {
+    const regs = await D.registrosDelDia(fecha);
+    v.innerHTML = barra(fecha) + tabla(regs, { conTotal: esAdmin() });
+    conectarBarra(fecha);
+    conectarFilas(regs, () => vistaAgenda(fecha));
+  } catch (ex) {
+    v.innerHTML = barra(fecha) + `<p class="error">${escapar(mensajeError(ex))}</p>`;
+    conectarBarra(fecha);
   }
-
-  contenedor.appendChild(tablaEscritorio());
-  contenedor.appendChild(tarjetasMovil());
-  contenedor.appendChild(pie());
-  contenedor.appendChild(nota());
 }
 
-function barraFecha() {
-  const caja = crear('div', { clase: 'pie-agenda', atributos: { style: 'margin:0 0 16px' } });
-
-  const anterior = crear('button', {
-    clase: 'boton-icono', texto: '‹',
-    atributos: { type: 'button', 'aria-label': 'Día anterior', style: 'font-size:26px' },
-    al: { click: () => cambiarFecha(sumarDias(fecha, -1)) }
-  });
-  const siguiente = crear('button', {
-    clase: 'boton-icono', texto: '›',
-    atributos: { type: 'button', 'aria-label': 'Día siguiente', style: 'font-size:26px' },
-    al: { click: () => cambiarFecha(sumarDias(fecha, 1)) }
-  });
-
-  caja.append(anterior, crear('strong', { texto: fechaLarga(fecha) }), siguiente);
-
-  if (fecha !== hoy()) {
-    caja.appendChild(crear('button', {
-      clase: 'boton-enlace', texto: 'Volver a hoy',
-      atributos: { type: 'button' },
-      al: { click: () => cambiarFecha(hoy()) }
-    }));
-  }
-  return caja;
+function barra(fecha) {
+  const esHoy = fecha === hoy();
+  return `
+    <div class="barra-acciones">
+      <button class="btn btn--principal" id="a-nuevo">+ Nuevo</button>
+      <button class="btn btn--suave" id="a-reserva">Reserva rápida</button>
+      <button class="btn btn--neutro" id="a-proximas">Ver próximas reservas</button>
+      <input type="date" class="btn btn--neutro" id="a-fecha" value="${fecha}"
+             style="padding:12px 14px;font-size:15px">
+      ${!esHoy ? '<button class="btn btn--neutro" id="a-hoy">Volver a hoy</button>' : ''}
+      <button class="btn btn--neutro oculto" id="a-borrar">Borrar seleccionado</button>
+    </div>
+    <p class="eyebrow" style="margin:-8px 0 16px">${escapar(fechaLarga(fecha))}</p>`;
 }
 
-async function cambiarFecha(nueva) {
-  fecha = nueva;
-  await cargar();
+function conectarBarra(fecha) {
+  $('#a-nuevo').onclick    = () => formularioServicio(null, fecha, () => vistaAgenda(fecha));
+  $('#a-reserva').onclick  = () => reservaRapida(fecha, () => vistaAgenda(fecha));
+  $('#a-proximas').onclick = proximasReservas;
+  $('#a-fecha').onchange   = e => vistaAgenda(e.target.value);
+  const h = $('#a-hoy'); if (h) h.onclick = () => vistaAgenda(hoy());
+  const b = $('#a-borrar');
+  if (b) b.onclick = async () => {
+    const ok = await confirmar({
+      titulo: 'Borrar reservas', peligro: true, aceptar: 'Borrar',
+      texto: `Se borrarán ${seleccion.size} ${seleccion.size === 1 ? 'reserva' : 'reservas'}. No contienen dinero, así que no afecta ningún cuadre.`
+    });
+    if (!ok) return;
+    try {
+      for (const id of seleccion) await D.borrarRegistro(id);
+      seleccion.clear();
+      avisar('Reservas borradas', 'exito');
+      vistaAgenda(fecha);
+    } catch (ex) { avisar(mensajeError(ex), 'error'); }
+  };
 }
 
-/* ── Tabla (escritorio) ─────────────────────────────────────────────── */
+// --- Tabla en escritorio, tarjetas en celular ------------------------------
+export function tabla(regs, { conTotal = false, conFecha = false } = {}) {
+  if (!regs.length) return vacio('Todavía no hay nada anotado en este día.',
+    '<button class="btn btn--principal" onclick="document.getElementById(\'a-nuevo\')?.click()">+ Nuevo</button>');
 
-const COLUMNAS = ['', 'Hora', 'Cliente', 'Srta.', 'Servicio', 'Tiempo', 'Desc.', 'Pago', 'Total', 'Estado'];
+  const total = regs.filter(r => r.estado === 'atendido' && !r.anulado)
+                    .reduce((s, r) => s + Number(r.precio_cobrado || 0), 0);
 
-function tablaEscritorio() {
-  const envoltura = crear('div', { clase: 'tabla-envoltura a-tarjetas' });
-  const tabla = crear('table', { clase: 'tabla' });
-
-  const thead = crear('thead');
-  const filaCabecera = crear('tr');
-  COLUMNAS.forEach((titulo, i) => {
-    filaCabecera.appendChild(crear('th', {
-      texto: titulo,
-      clase: (i === 6 || i === 8) ? 'derecha' : ''
-    }));
-  });
-  thead.appendChild(filaCabecera);
-  tabla.appendChild(thead);
-
-  const tbody = crear('tbody');
-  registros.forEach((r) => tbody.appendChild(fila(r)));
-  tabla.appendChild(tbody);
-
-  envoltura.appendChild(tabla);
-  return envoltura;
+  return `<div class="panel"><div class="tabla-envoltura">
+    <table class="a-tarjetas">
+      <thead><tr>
+        <th></th><th>Hora</th>${conFecha ? '<th>Fecha</th>' : ''}<th>Cliente</th><th>Terapeuta</th>
+        <th>Servicio</th><th>Modalidad</th><th>Tiempo</th>
+        <th class="num">Desc</th><th>Pago</th><th class="num">Total</th><th>Estado</th>
+      </tr></thead>
+      <tbody>${regs.map(fila.bind(null, conFecha)).join('')}</tbody>
+    </table></div>
+    ${conTotal ? `<div class="panel__cabecera" style="border-bottom:none;border-top:1px solid var(--borde);
+        display:flex;justify-content:space-between">
+        <span class="eyebrow">${regs.length} ${regs.length === 1 ? 'atención' : 'atenciones'}</span>
+        <strong>Total del día: ${monto(total)}</strong></div>` : ''}
+  </div>`;
 }
 
-function fila(r) {
-  const tr = crear('tr', { datos: { abrible: 'si', id: r.id } });
-  tr.addEventListener('click', () => abrirRegistroExistente(r));
+function fila(conFecha, r) {
+  const s = r.servicio;
+  const desc = Number(r.descuento || 0);
+  const estadoTxt = r.anulado ? 'Anulado'
+    : r.estado === 'atendido' ? 'Atendido' : r.estado === 'reserva' ? 'Reserva' : 'Cancelado';
+  const clase = r.anulado ? 'cancelado' : r.estado;
 
-  /* VIP: marca discreta, no una columna ancha con texto */
-  const tdVip = crear('td');
-  if (r.clienteVip) {
-    tdVip.appendChild(crear('span', {
-      clase: 'vip', texto: '★', atributos: { title: 'Cliente VIP', 'aria-label': 'Cliente VIP' }
-    }));
-  }
-  tr.appendChild(tdVip);
-
-  tr.appendChild(celda(hora12(r.hora_ingreso), { vacio: '—' }));
-  tr.appendChild(celda(r.clienteNombre, { vacio: 'Sin nombre' }));
-  tr.appendChild(celda(unirMasajistas(r.nombresMasajistas), { vacio: 'Sin asignar' }));
-  tr.appendChild(celda(r.servicioNombre, { vacio: '—' }));
-  tr.appendChild(celda(r.duracion ? duracion(r.duracion) : null));
-
-  /* Descuento: si no hay, un guion. Nunca un cero falso. */
-  tr.appendChild(
-    Number(r.descuento) > 0
-      ? celdaMonto(r.descuento)
-      : celda(null, { clase: 'monto' })
-  );
-
-  tr.appendChild(celda(textoPago(r), { vacio: 'No registrado' }));
-
-  tr.appendChild(
-    r.estado === 'atendido'
-      ? celdaMonto(r.precio_cobrado)
-      : celda(null, { clase: 'monto' })
-  );
-
-  const tdEstado = crear('td');
-  tdEstado.appendChild(pastilla(r.estado));
-  tr.appendChild(tdEstado);
-
-  return tr;
+  return `<tr data-clic data-id="${r.id}" data-estado="${r.estado}">
+    <td style="width:44px">${r.estado === 'reserva'
+      ? `<input type="checkbox" class="marca-reserva" data-marca="${r.id}"
+           style="width:22px;height:22px;accent-color:var(--dorado)" aria-label="Seleccionar reserva">`
+      : (r.cliente?.vip ? '<span class="estrella" title="VIP">★</span>' : '')}</td>
+    <td class="destacado" data-etiqueta="Hora">${oFalta(hora12(r.hora_ingreso?.slice(0,5)))}</td>
+    ${conFecha ? `<td data-etiqueta="Fecha">${fechaCorta(r.fecha)}</td>` : ''}
+    <td data-etiqueta="Cliente">${oFalta(nombreCliente(r))}</td>
+    <td data-etiqueta="Terapeuta">${nombreMasajistas(r) || '<span class="vacio">Sin asignar</span>'}</td>
+    <td data-etiqueta="Servicio">${oFalta(s?.masaje || (r.servicio_nombre_snapshot || '').split(' · ')[0])}</td>
+    <td data-etiqueta="Modalidad">${oFalta(s?.modalidad)}</td>
+    <td data-etiqueta="Tiempo">${s?.duracion ? s.duracion + "'" : '<span class="vacio">—</span>'}</td>
+    <td class="num" data-etiqueta="Desc">${desc > 0
+        ? `<span class="insignia insignia--descuento">−${monto(desc)}</span>`
+        : '<span class="vacio">—</span>'}</td>
+    <td data-etiqueta="Pago">${r.forma_pago
+        ? `<span class="insignia insignia--pago">${etiquetaPago(r)}</span>`
+        : '<span class="vacio">No registrado</span>'}</td>
+    <td class="num" data-etiqueta="Total">${r.precio_cobrado != null
+        ? `<strong>${monto(r.precio_cobrado)}</strong>` : '<span class="vacio">—</span>'}</td>
+    <td data-etiqueta="Estado"><span class="insignia insignia--${clase}">${estadoTxt}</span></td>
+  </tr>`;
 }
 
-function textoPago(r) {
-  const medios = Object.entries(r.pagos || {});
-  if (!medios.length) return null;
-  if (medios.length === 1) return capitalizarMedio(medios[0][0]);
-  return medios.map(([m, monto]) => `${capitalizarMedio(m)} ${soles(monto)}`).join(' + ');
-}
+const etiquetaPago = r => ({ efectivo: 'Efectivo', tarjeta: 'Tarjeta', yape: 'Yape' })[r.forma_pago] || '—';
 
-function capitalizarMedio(m) {
-  return ({ efectivo: 'Efectivo', tarjeta: 'Tarjeta', yape: 'Yape' })[m] || m;
-}
+function conectarFilas(regs, recargar) {
+  seleccion.clear();
+  const botonBorrar = $('#a-borrar');
 
-/* ── Tarjetas (celular) ─────────────────────────────────────────────── */
-
-function tarjetasMovil() {
-  const lista = crear('div', { clase: 'lista-tarjetas' });
-
-  registros.forEach((r) => {
-    const tarjeta = crear('div', { clase: 'tarjeta-fila', datos: { id: r.id } });
-    tarjeta.addEventListener('click', () => abrirRegistroExistente(r));
-
-    tarjeta.appendChild(crear('span', { clase: 'hora', texto: hora12(r.hora_ingreso, { vacio: '—' }) }));
-
-    const nombre = crear('span', { clase: 'cliente', texto: r.clienteNombre || 'Sin nombre' });
-    if (r.clienteVip) nombre.appendChild(crear('span', { clase: 'vip', texto: ' ★' }));
-    tarjeta.appendChild(nombre);
-
-    tarjeta.appendChild(pastilla(r.estado));
-
-    const partes = [
-      unirMasajistas(r.nombresMasajistas),
-      r.servicioNombre || '—',
-      r.estado === 'atendido' ? soles(r.precio_cobrado) : null,
-      textoPago(r) || 'Pago no registrado'
-    ].filter(Boolean);
-
-    tarjeta.appendChild(crear('span', { clase: 'detalle', texto: partes.join(' · ') }));
-    lista.appendChild(tarjeta);
+  $('#vista').querySelectorAll('[data-marca]').forEach(chk => {
+    chk.onclick = e => e.stopPropagation();
+    chk.onchange = () => {
+      chk.checked ? seleccion.add(Number(chk.dataset.marca))
+                  : seleccion.delete(Number(chk.dataset.marca));
+      botonBorrar?.classList.toggle('oculto', seleccion.size === 0);
+      if (botonBorrar) botonBorrar.textContent =
+        `Borrar ${seleccion.size} ${seleccion.size === 1 ? 'reserva' : 'reservas'}`;
+    };
   });
 
-  return lista;
-}
-
-/* ── Pie condicional al rol ─────────────────────────────────────────── */
-
-function pie() {
-  const atendidos = registros.filter((r) => r.estado === 'atendido');
-  const caja = crear('div', { clase: 'pie-agenda' });
-
-  caja.appendChild(crear('span', { texto: plural(atendidos.length, 'atención', 'atenciones') }));
-
-  const reservas = registros.filter((r) => r.estado === 'reserva').length;
-  if (reservas) {
-    caja.appendChild(crear('span', { texto: `${plural(reservas, 'reserva', 'reservas')} sin completar` }));
-  }
-
-  /* El total del día SOLO lo ve el Administrador (§3.2).
-     Ocultarlo es una separación de interfaz, no una barrera criptográfica:
-     Recepción lee cada monto individual y podría sumarlos. Es una decisión
-     aceptada y está dicha tal cual en la documentación. */
-  if (esAdmin()) {
-    const total = atendidos.reduce((suma, r) => suma + Number(r.precio_cobrado || 0), 0);
-    caja.appendChild(crear('strong', { texto: `Total del día: ${soles(total)}` }));
-  }
-
-  return caja;
-}
-
-function nota() {
-  const sinPago = registros.filter(
-    (r) => r.estado === 'atendido' && !Object.keys(r.pagos || {}).length
-  ).length;
-
-  if (!sinPago) return crear('div');
-
-  const caja = crear('p', {
-    clase: 'campo-ayuda',
-    atributos: { style: 'margin-top:10px' },
-    texto: `${plural(sinPago, 'atención', 'atenciones')} sin forma de pago registrada. Al cerrar el día, la caja puede no cuadrar.`
+  $('#vista').querySelectorAll('tr[data-clic]').forEach(tr => {
+    tr.onclick = e => {
+      if (e.target.closest('[data-marca]')) return;
+      const r = regs.find(x => String(x.id) === tr.dataset.id);
+      if (!r) return;
+      // Tocar una reserva abre directamente el formulario para completarla.
+      if (r.estado === 'reserva') formularioServicio(r, r.fecha, recargar);
+      else detalle(r, recargar);
+    };
   });
-  return caja;
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   ACCIONES
-   ══════════════════════════════════════════════════════════════════════ */
+// ===========================================================================
+//  Detalle de una atención
+//  Debe quedar perfectamente claro qué es referencia y qué es dinero cobrado.
+// ===========================================================================
+export function detalle(r, recargar) {
+  const s = r.servicio;
+  const l = (k, v, extra = '') => v == null || v === ''
+    ? '' : `<div class="tarifa__linea ${extra}"><span>${k}</span><span>${v}</span></div>`;
 
-async function abrirRegistro() {
-  const { irA } = await import('./app.js');
-  irA('registro', { fecha });
+  const cuerpo = abrirHoja('Detalle de la atención', `
+    <div class="tarifa" style="margin-bottom:18px">
+      ${l('Fecha', fechaCorta(r.fecha))}
+      ${l('Hora', hora12(r.hora_ingreso?.slice(0,5)))}
+      ${s?.duracion && r.hora_ingreso
+        ? l('Termina ~', hora12(sumarMinutos(r.hora_ingreso.slice(0,5), s.duracion))) : ''}
+      ${l('Estado', r.anulado ? 'Anulado' : r.estado === 'atendido' ? 'Atendido' : 'Reserva')}
+      ${l('Cliente', (nombreCliente(r) || '—') + (r.cliente?.vip ? '  ★ VIP' : ''))}
+      ${l('Servicio', nombreServicio(r) || '—')}
+      ${l('Masajista', nombreMasajistas(r) || 'Sin asignar')}
+    </div>
+    <div class="tarifa" style="margin-bottom:18px">
+      ${l('Precio referencial', monto(r.precio_referencial))}
+      ${Number(r.descuento) > 0 ? l('Descuento', '−' + monto(r.descuento), 'tarifa__linea--desc') : ''}
+      ${Number(r.ajuste)    > 0 ? l('Ajuste',    '+' + monto(r.ajuste),    'tarifa__linea--desc') : ''}
+      ${l('Precio cobrado', monto(r.precio_cobrado), 'tarifa__linea--total')}
+    </div>
+    <div class="tarifa" style="margin-bottom:18px">
+      ${l('Forma de pago', r.forma_pago ? etiquetaPago(r) : 'No registrado')}
+      ${l('Recibido', r.dinero_recibido != null ? monto(r.dinero_recibido) : null)}
+      ${l('Vuelto', r.vuelto != null && Number(r.vuelto) > 0 ? monto(r.vuelto) : null)}
+      ${l('Vuelto por', r.vuelto_metodo === 'yape' ? 'Yape' : r.vuelto_metodo === 'efectivo' ? 'Efectivo' : null)}
+      ${l('Motivo', r.motivo_descuento_texto || r.motivo_descuento)}
+    </div>
+    ${r.notas ? `<div class="panel"><div class="panel__cuerpo">
+        <span class="eyebrow">Nota interna</span>
+        <p style="margin:8px 0 0">${escapar(r.notas)}</p></div></div>` : ''}
+    ${r.anulado ? `<p class="error" style="margin-top:16px">Anulado: ${escapar(r.motivo_anulacion || '')}</p>` : ''}
+    ${esAdmin() && !r.anulado ? `
+      <div class="barra-acciones" style="margin:22px 0 0">
+        <button class="btn btn--neutro" id="d-editar" style="flex:1">Corregir</button>
+        <button class="btn btn--peligro" id="d-anular" style="flex:1">Anular</button>
+      </div>` : ''}`);
+
+  if (!esAdmin() || r.anulado) return;
+
+  cuerpo.querySelector('#d-editar').onclick = () => {
+    cerrarHoja();
+    setTimeout(() => formularioServicio(r, r.fecha, recargar), 240);
+  };
+
+  // Eliminar una atención es SIEMPRE baja lógica con motivo obligatorio:
+  // un registro que desaparece sin rastro rompe el cuadre de caja del día.
+  cuerpo.querySelector('#d-anular').onclick = () => {
+    const c2 = abrirHoja('Anular atención', `
+      <p class="ayuda" style="margin:0 0 18px">La atención deja de contar como venta y el cierre del día
+         se recalcula solo. El registro no se borra: queda con su motivo, para que el cuadre siga cerrando.</p>
+      <label class="campo"><span>¿Por qué se anula?</span>
+        <input type="text" id="an-motivo" placeholder="Se registró dos veces"></label>
+      <p class="error" id="an-error" hidden></p>
+      <button class="btn btn--peligro btn--bloque" id="an-ok">Anular atención</button>`);
+
+    c2.querySelector('#an-ok').onclick = async () => {
+      const motivo = c2.querySelector('#an-motivo').value.trim();
+      const err = c2.querySelector('#an-error');
+      if (!motivo) { err.textContent = 'Escribe el motivo. Es obligatorio.'; err.hidden = false; return; }
+      try {
+        await D.anularRegistro(r.id, motivo);
+        avisar('Atención anulada', 'exito');
+        cerrarHoja(); recargar?.();
+      } catch (ex) { err.textContent = mensajeError(ex); err.hidden = false; }
+    };
+  };
 }
 
-/** Tocar una fila: si es reserva, se abre para completarla; si ya está
-    atendida, se abre el detalle. */
-async function abrirRegistroExistente(r) {
-  if (r.estado === 'reserva') {
-    const registro = await import('./registro.js');
-    await registro.completarReserva(r.id, { alGuardar: refrescar });
-    return;
-  }
-  const historial = await import('./historial.js');
-  await historial.abrirDetalle(r.id, { alCambiar: refrescar });
+// ===========================================================================
+async function proximasReservas() {
+  const cuerpo = abrirHoja('Próximas reservas', esqueleto(4));
+  try {
+    const regs = await D.proximasReservas(hoy());
+    cuerpo.innerHTML = regs.length
+      ? tabla(regs, { conFecha: true })
+      : vacio('No hay reservas agendadas para los próximos días.');
+    cuerpo.querySelectorAll('tr[data-clic]').forEach(tr => tr.onclick = () => {
+      const r = regs.find(x => String(x.id) === tr.dataset.id);
+      cerrarHoja();
+      setTimeout(() => formularioServicio(r, r.fecha, () => vistaAgenda(estado.fecha)), 240);
+    });
+  } catch (ex) { cuerpo.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; }
 }
 
-async function verProximas() {
-  const { irA } = await import('./app.js');
-  irA('historial', { desde: sumarDias(hoy(), 1), estado: 'reserva', titulo: 'Próximas reservas' });
-}
+// ===========================================================================
+//  HISTORIAL — la misma lista, sin límite de fecha
+// ===========================================================================
+export async function vistaHistorial() {
+  const v = $('#vista');
+  v.innerHTML = `
+    <div class="panel" style="margin-bottom:18px"><div class="panel__cuerpo">
+      <div class="fila">
+        <label class="campo"><span>Desde</span><input type="date" id="h-desde" value="${sumarDias(hoy(), -30)}"></label>
+        <label class="campo"><span>Hasta</span><input type="date" id="h-hasta" value="${hoy()}"></label>
+      </div>
+      <div class="fila">
+        <label class="campo"><span>Estado</span><select id="h-estado">
+          <option value="">Todos</option><option value="atendido">Atendido</option>
+          <option value="reserva">Reserva</option><option value="cancelado">Cancelado</option></select></label>
+        <label class="campo"><span>Forma de pago</span><select id="h-pago">
+          <option value="">Todas</option><option value="efectivo">Efectivo</option>
+          <option value="tarjeta">Tarjeta</option><option value="yape">Yape</option></select></label>
+      </div>
+      <label class="casilla"><input type="checkbox" id="h-desc">
+        <span>Solo servicios con descuento</span></label>
+      <button class="btn btn--principal btn--bloque" id="h-buscar">Buscar</button>
+    </div></div>
+    <div id="h-resultado"></div>`;
 
-async function elegirOtroDia() {
-  const campo = crear('input', {
-    atributos: { type: 'date', value: fecha, style: 'width:100%;min-height:52px;font-size:19px' }
-  });
-  const caja = crear('label', { clase: 'campo' });
-  caja.append(crear('span', { clase: 'campo-etiqueta', texto: 'Día que quieres ver' }), campo);
+  const buscar = async () => {
+    const caja = $('#h-resultado');
+    caja.innerHTML = esqueleto(6);
+    try {
+      const regs = await D.historial({
+        desde: $('#h-desde').value, hasta: $('#h-hasta').value,
+        estado: $('#h-estado').value || null,
+        forma_pago: $('#h-pago').value || null,
+        conDescuento: $('#h-desc').checked
+      });
+      caja.innerHTML = regs.length ? tabla(regs, { conFecha: true })
+                                   : vacio('No hay registros con esos filtros.');
+      caja.querySelectorAll('tr[data-clic]').forEach(tr => tr.onclick = () => {
+        const r = regs.find(x => String(x.id) === tr.dataset.id);
+        r.estado === 'reserva' ? formularioServicio(r, r.fecha, buscar) : detalle(r, buscar);
+      });
+    } catch (ex) { caja.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; }
+  };
 
-  const ok = await confirmar({ titulo: 'Ver otro día', extra: caja, aceptar: 'Ver' });
-  if (ok && campo.value) cambiarFecha(campo.value);
-}
-
-/* Hora estimada de término, para el detalle rápido de una fila.
-   Es informativa: no se guarda como dato duro (§5.2). */
-export function terminaAprox(r) {
-  return r.hora_ingreso && r.duracion ? horaFin(r.hora_ingreso, r.duracion) : null;
+  $('#h-buscar').onclick = buscar;
+  buscar();
 }

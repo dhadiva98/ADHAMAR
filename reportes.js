@@ -1,405 +1,190 @@
-/* ══════════════════════════════════════════════════════════════════════
-   ADHAMAR — reportes.js
-   Métricas por periodo y exportación a Excel (§5.13). Solo Administrador.
+// ===========================================================================
+//  REPORTES Y EXPORTACIÓN
+//  Los datos se piden a Supabase en el momento de exportar. El Excel es
+//  siempre una salida, nunca una fuente de información.
+// ===========================================================================
+import { hoy, sumarDias, fechaCorta, hora12, monto, numero, escapar, mensajeError } from './core.js';
+import { $, avisar, esqueleto, vacio } from './ui.js';
+import * as D from './datos.js';
 
-   ⚠ EL DOBLE CONTEO, dicho donde se ve y no en una nota al pie de un
-   manual: cuando un masaje lo realizan dos srtas., el servicio y su monto
-   se atribuyen COMPLETOS A CADA UNA. Por eso la suma de la columna
-   "Cobrado" de la tabla por srta. NO es el total de ventas del día. El
-   total real sale de los registros, contando cada uno una sola vez.
+const RANGOS = {
+  hoy:     () => [hoy(), hoy()],
+  ayer:    () => [sumarDias(hoy(), -1), sumarDias(hoy(), -1)],
+  semana:  () => [sumarDias(hoy(), -6), hoy()],
+  mes:     () => [hoy().slice(0, 8) + '01', hoy()]
+};
 
-   El desglose por forma de pago sí cuadra con el total, porque reparte
-   cada atención entre sus medios sin duplicarla.
+export async function vistaReportes() {
+  const v = $('#vista');
+  const [d0, h0] = RANGOS.mes();
 
-   ─────────────────────────────────────────────────────────────────────
-   Forma que debe devolver reporte_periodo(p_desde, p_hasta, p_filtros):
+  v.innerHTML = `
+    <div class="barra-acciones">
+      ${Object.keys(RANGOS).map(k => `<button class="btn btn--neutro" data-rango="${k}">
+        ${({ hoy: 'Hoy', ayer: 'Ayer', semana: 'Esta semana', mes: 'Este mes' })[k]}</button>`).join('')}
+    </div>
+    <div class="panel" style="margin-bottom:18px"><div class="panel__cuerpo">
+      <div class="fila">
+        <label class="campo"><span>Desde</span><input type="date" id="r-desde" value="${d0}"></label>
+        <label class="campo"><span>Hasta</span><input type="date" id="r-hasta" value="${h0}"></label>
+      </div>
+      <button class="btn btn--principal btn--bloque" id="r-ver">Ver reporte</button>
+    </div></div>
+    <div id="r-salida">${esqueleto(5)}</div>`;
 
-     { total_servicios, ventas_referenciales, descuentos, ventas_reales,
-       ticket_promedio,
-       por_metodo:    { efectivo, tarjeta, yape },
-       top_servicios: [{ nombre, cantidad, total }],
-       por_masajista: [{ nombre, cantidad, total, descuentos }] }
-   ────────────────────────────────────────────────────────────────────── */
-
-import { crear, vaciar, traducirError } from './core.js';
-import {
-  reportePeriodo, historial as traerHistorial, clientes as traerClientes,
-  asistenciaPeriodo, cierres as traerCierres
-} from './datos.js';
-import {
-  cabeceraVista, celda, celdaMonto, esqueleto, vacio, campo,
-  aviso, avisoError, lineaCalculo
-} from './ui.js';
-import {
-  hoy, sumarDias, fechaCorta, hora12, soles, unirMasajistas, plural
-} from './formato.js';
-
-export const tablas = ['registros_servicios', 'pagos_registro'];
-
-let contenedor = null;
-let desde = sumarDias(hoy(), -30);
-let hasta = hoy();
-let datos = null;
-
-/* ══════════════════════════════════════════════════════════════════════
-   VISTA
-   ══════════════════════════════════════════════════════════════════════ */
-
-export async function montar(donde) {
-  contenedor = donde;
-  await cargar();
+  v.querySelectorAll('[data-rango]').forEach(b => b.onclick = () => {
+    const [a, z] = RANGOS[b.dataset.rango]();
+    $('#r-desde').value = a; $('#r-hasta').value = z; generar();
+  });
+  $('#r-ver').onclick = generar;
+  generar();
 }
 
-export function desmontar() {
-  contenedor = null;
-  datos = null;
-}
+async function generar() {
+  const salida = $('#r-salida');
+  const desde = $('#r-desde').value, hasta = $('#r-hasta').value;
+  salida.innerHTML = esqueleto(5);
 
-export async function refrescar() {
-  if (contenedor) await cargar({ silencioso: true });
-}
-
-async function cargar({ silencioso = false } = {}) {
-  if (!silencioso) vaciar(contenedor).appendChild(esqueleto(6));
   try {
-    datos = await reportePeriodo(desde, hasta);
-  } catch (e) {
-    vaciar(contenedor).appendChild(vacio('No se pudo cargar el reporte', e.amable ? e.message : traducirError(e)));
-    return;
-  }
-  pintar();
-}
+    const regs = (await D.historial({ desde, hasta, estado: 'atendido', limite: 2000 }))
+                   .filter(r => !r.anulado);
+    if (!regs.length) { salida.innerHTML = vacio('No hay atenciones en ese rango.'); return; }
 
-function pintar() {
-  vaciar(contenedor);
-  contenedor.appendChild(cabeceraVista('Reportes'));
-  contenedor.appendChild(atajos());
-  contenedor.appendChild(rangoManual());
+    const suma  = (f) => regs.reduce((s, r) => s + numero(f(r)), 0);
+    const ref   = suma(r => r.precio_referencial);
+    const desc  = suma(r => r.descuento);
+    const real  = suma(r => r.precio_cobrado);
+    const porPago = f => regs.filter(r => r.forma_pago === f).reduce((s, r) => s + numero(r.precio_cobrado), 0);
 
-  if (!datos || !datos.total_servicios) {
-    contenedor.appendChild(vacio('No hay servicios en ese periodo', 'Prueba con un rango más amplio.'));
-    contenedor.appendChild(cajaExportar());
-    return;
-  }
+    // Servicios más vendidos
+    const porServicio = {};
+    regs.forEach(r => {
+      const n = r.servicio?.nombre_completo || r.servicio_nombre_snapshot || 'Sin servicio';
+      porServicio[n] = (porServicio[n] || 0) + 1;
+    });
 
-  contenedor.appendChild(cuadroResumen());
-  contenedor.appendChild(cuadroMetodos());
-  contenedor.appendChild(tablaTop());
-  contenedor.appendChild(tablaMasajistas());
-  contenedor.appendChild(cajaExportar());
-}
-
-function atajos() {
-  const caja = crear('div', { clase: 'opciones', atributos: { style: 'margin-bottom:14px' } });
-
-  const rangos = [
-    ['Hoy', () => [hoy(), hoy()]],
-    ['Ayer', () => [sumarDias(hoy(), -1), sumarDias(hoy(), -1)]],
-    ['Esta semana', () => [sumarDias(hoy(), -6), hoy()]],
-    ['Este mes', () => [`${hoy().slice(0, 7)}-01`, hoy()]],
-    ['Últimos 30 días', () => [sumarDias(hoy(), -30), hoy()]]
-  ];
-
-  rangos.forEach(([texto, calcular]) => {
-    const [d, h] = calcular();
-    caja.appendChild(crear('button', {
-      clase: 'opcion',
-      texto,
-      atributos: { type: 'button', 'aria-pressed': (desde === d && hasta === h) ? 'true' : 'false' },
-      al: { click: async () => { [desde, hasta] = calcular(); await cargar(); } }
+    // Rendimiento por masajista.
+    // OJO: cuando dos masajistas hacen un masaje, el monto se atribuye COMPLETO
+    // a cada una. La suma de esta columna NO equivale a las ventas totales.
+    const porMasajista = {};
+    regs.forEach(r => (r.masajistas || []).forEach(m => {
+      const n = m.masajista && !m.masajista.eliminada
+        ? `${m.masajista.nombre} ${m.masajista.apellido || ''}`.trim()
+        : m.masajista_nombre_snapshot;
+      porMasajista[n] ||= { servicios: 0, ref: 0, desc: 0, cobrado: 0 };
+      porMasajista[n].servicios++;
+      porMasajista[n].ref     += numero(r.precio_referencial);
+      porMasajista[n].desc    += numero(r.descuento);
+      porMasajista[n].cobrado += numero(r.precio_cobrado);
     }));
-  });
 
-  return caja;
+    salida.innerHTML = `
+      <div class="rejilla">
+        <div class="metrica destacada"><span class="eyebrow">Ventas reales</span><b>${monto(real)}</b></div>
+        <div class="metrica"><span class="eyebrow">Servicios</span><b>${regs.length}</b></div>
+        <div class="metrica"><span class="eyebrow">Ticket promedio</span><b>${monto(real / regs.length)}</b></div>
+        <div class="metrica"><span class="eyebrow">Descuentos</span><b>${monto(desc)}</b></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__cabecera"><span class="eyebrow">Cómo pagaron</span></div>
+        <div class="panel__cuerpo"><div class="tarifa" style="margin:0">
+          <div class="tarifa__linea"><span>Efectivo</span><span>${monto(porPago('efectivo'))}</span></div>
+          <div class="tarifa__linea"><span>Tarjeta</span><span>${monto(porPago('tarjeta'))}</span></div>
+          <div class="tarifa__linea"><span>Yape</span><span>${monto(porPago('yape'))}</span></div>
+          <div class="tarifa__linea"><span>Ventas referenciales</span><span>${monto(ref)}</span></div>
+        </div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__cabecera"><span class="eyebrow">Rendimiento por masajista</span></div>
+        <div class="tabla-envoltura"><table>
+          <thead><tr><th>Masajista</th><th class="num">Servicios</th><th class="num">Referencial</th>
+            <th class="num">Descuentos</th><th class="num">Cobrado</th></tr></thead>
+          <tbody>${Object.entries(porMasajista)
+            .sort((a, b) => b[1].servicios - a[1].servicios)
+            .map(([n, d]) => `<tr><td>${escapar(n)}</td><td class="num">${d.servicios}</td>
+              <td class="num">${monto(d.ref)}</td><td class="num">${monto(d.desc)}</td>
+              <td class="num"><strong>${monto(d.cobrado)}</strong></td></tr>`).join('')}</tbody>
+        </table></div>
+        <div class="panel__cuerpo" style="border-top:1px solid var(--borde)">
+          <p class="ayuda" style="margin:0">Cuando dos masajistas atienden juntas, el monto se cuenta
+             completo para cada una. Por eso la suma de esta columna no es el total de ventas del período,
+             que es ${monto(real)}.</p>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel__cabecera"><span class="eyebrow">Servicios más vendidos</span></div>
+        <div class="tabla-envoltura"><table>
+          <thead><tr><th>Servicio</th><th class="num">Veces</th></tr></thead>
+          <tbody>${Object.entries(porServicio).sort((a, b) => b[1] - a[1]).slice(0, 15)
+            .map(([n, c]) => `<tr><td>${escapar(n)}</td><td class="num">${c}</td></tr>`).join('')}</tbody>
+        </table></div>
+      </div>
+
+      <div class="barra-acciones" style="margin-top:20px">
+        <button class="btn btn--neutro" id="x-ventas">Descargar ventas</button>
+        <button class="btn btn--neutro" id="x-clientes">Descargar clientes</button>
+        <button class="btn btn--neutro" id="x-asistencia">Descargar asistencia</button>
+      </div>`;
+
+    $('#x-ventas').onclick = () => exportarVentas(regs, desde, hasta);
+    $('#x-clientes').onclick = exportarClientes;
+    $('#x-asistencia').onclick = () => exportarAsistencia(desde, hasta);
+  } catch (ex) { salida.innerHTML = `<p class="error">${escapar(mensajeError(ex))}</p>`; }
 }
 
-function rangoManual() {
-  const caja = crear('div', { atributos: { style: 'display:flex;flex-wrap:wrap;gap:14px;margin-bottom:18px' } });
-
-  const { campo: c1, entrada: e1 } = campo('Desde', { tipo: 'date', valor: desde });
-  const { campo: c2, entrada: e2 } = campo('Hasta', { tipo: 'date', valor: hasta });
-  [c1, c2].forEach((c) => { c.style.flex = '1 1 150px'; c.style.marginBottom = '0'; });
-
-  const boton = crear('button', {
-    clase: 'boton-secundario',
-    texto: 'Ver periodo',
-    atributos: { type: 'button', style: 'width:auto;align-self:flex-end' },
-    al: {
-      click: async () => {
-        if (e1.value) desde = e1.value;
-        if (e2.value) hasta = e2.value;
-        await cargar();
-      }
-    }
-  });
-
-  caja.append(c1, c2, boton);
-  return caja;
-}
-
-function cuadroResumen() {
-  const caja = crear('div', { clase: 'tarjeta' });
-  caja.appendChild(crear('p', {
-    clase: 'titulo-tarjeta',
-    texto: `Del ${fechaCorta(desde)} al ${fechaCorta(hasta)}`
-  }));
-
-  const linea = lineaCalculo('Servicios realizados', null);
-  linea.lastChild.textContent = String(datos.total_servicios ?? 0);
-  caja.appendChild(linea);
-
-  caja.appendChild(lineaCalculo('Ventas referenciales', datos.ventas_referenciales || 0));
-  caja.appendChild(lineaCalculo('Descuentos', -(datos.descuentos || 0)));
-  caja.appendChild(lineaCalculo('Ventas reales', datos.ventas_reales || 0, { total: true }));
-  caja.appendChild(lineaCalculo('Ticket promedio', datos.ticket_promedio || 0));
-  return caja;
-}
-
-function cuadroMetodos() {
-  const caja = crear('div', { clase: 'tarjeta' });
-  caja.appendChild(crear('p', { clase: 'titulo-tarjeta', texto: 'Ventas por forma de pago' }));
-  const m = datos.por_metodo || {};
-  caja.appendChild(lineaCalculo('Efectivo', m.efectivo || 0));
-  caja.appendChild(lineaCalculo('Tarjeta', m.tarjeta || 0));
-  caja.appendChild(lineaCalculo('Yape', m.yape || 0));
-  caja.appendChild(lineaCalculo('Total', (m.efectivo || 0) + (m.tarjeta || 0) + (m.yape || 0), { total: true }));
-  caja.appendChild(crear('p', {
-    clase: 'campo-ayuda',
-    texto: 'Este desglose sí cuadra con las ventas reales: cada atención se reparte entre sus medios sin duplicarse.'
-  }));
-  return caja;
-}
-
-function tablaTop() {
-  const filas = datos.top_servicios || [];
-  const caja = crear('div', { clase: 'tarjeta' });
-  caja.appendChild(crear('p', { clase: 'titulo-tarjeta', texto: 'Servicios más vendidos' }));
-
-  if (!filas.length) {
-    caja.appendChild(crear('p', { clase: 'campo-ayuda', texto: 'Sin datos en este periodo.' }));
-    return caja;
-  }
-
-  const envoltura = crear('div', { clase: 'tabla-envoltura' });
-  const tabla = crear('table', { clase: 'tabla' });
-  const thead = crear('thead');
-  const tr = crear('tr');
-  ['Servicio', 'Cantidad', 'Cobrado'].forEach((t, i) =>
-    tr.appendChild(crear('th', { texto: t, clase: i > 0 ? 'derecha' : '' })));
-  thead.appendChild(tr);
-  tabla.appendChild(thead);
-
-  const tbody = crear('tbody');
-  filas.forEach((s) => {
-    const fila = crear('tr');
-    fila.appendChild(celda(s.nombre));
-    fila.appendChild(celda(String(s.cantidad), { clase: 'monto' }));
-    fila.appendChild(celdaMonto(s.total));
-    tbody.appendChild(fila);
-  });
-  tabla.appendChild(tbody);
-  envoltura.appendChild(tabla);
-  caja.appendChild(envoltura);
-  return caja;
-}
-
-function tablaMasajistas() {
-  const filas = datos.por_masajista || [];
-  const caja = crear('div', { clase: 'tarjeta' });
-  caja.appendChild(crear('p', { clase: 'titulo-tarjeta', texto: 'Por srta.' }));
-
-  if (!filas.length) {
-    caja.appendChild(crear('p', { clase: 'campo-ayuda', texto: 'Sin datos en este periodo.' }));
-    return caja;
-  }
-
-  const envoltura = crear('div', { clase: 'tabla-envoltura' });
-  const tabla = crear('table', { clase: 'tabla' });
-  const thead = crear('thead');
-  const tr = crear('tr');
-  ['Srta.', 'Servicios', 'Descuentos', 'Cobrado'].forEach((t, i) =>
-    tr.appendChild(crear('th', { texto: t, clase: i > 0 ? 'derecha' : '' })));
-  thead.appendChild(tr);
-  tabla.appendChild(thead);
-
-  const tbody = crear('tbody');
-  filas.forEach((m) => {
-    const fila = crear('tr');
-    fila.appendChild(celda(m.nombre));
-    fila.appendChild(celda(String(m.cantidad), { clase: 'monto' }));
-    fila.appendChild(Number(m.descuentos) > 0 ? celdaMonto(m.descuentos) : celda(null, { clase: 'monto' }));
-    fila.appendChild(celdaMonto(m.total));
-    tbody.appendChild(fila);
-  });
-  tabla.appendChild(tbody);
-  envoltura.appendChild(tabla);
-  caja.appendChild(envoltura);
-
-  /* La advertencia va aquí abajo, pegada a la tabla que la necesita. */
-  caja.appendChild(crear('p', {
-    clase: 'campo-ayuda',
-    texto: 'Cuando dos srtas. atienden juntas, el servicio se cuenta completo para cada una. Por eso la suma de esta columna no es el total de ventas: ese está arriba, en Ventas reales.'
-  }));
-  return caja;
-}
-
-/* ══════════════════════════════════════════════════════════════════════
-   EXPORTACIÓN A EXCEL
-   Los datos se piden a Supabase EN EL MOMENTO de exportar. El Excel es
-   una salida, nunca una fuente.
-   ══════════════════════════════════════════════════════════════════════ */
-
-function cajaExportar() {
-  const caja = crear('div', { clase: 'tarjeta' });
-  caja.appendChild(crear('p', { clase: 'titulo-tarjeta', texto: 'Descargar en Excel' }));
-  caja.appendChild(crear('p', {
-    clase: 'campo-ayuda',
-    texto: `Se descarga lo que hay en el sistema ahora mismo, del ${fechaCorta(desde)} al ${fechaCorta(hasta)}.`
-  }));
-
-  const botones = crear('div', { clase: 'opciones', atributos: { style: 'margin-top:12px' } });
-  [
-    ['Ventas', exportarVentas],
-    ['Clientes', exportarClientes],
-    ['Asistencia', exportarAsistencia],
-    ['Cierres diarios', exportarCierres]
-  ].forEach(([texto, fn]) => {
-    botones.appendChild(crear('button', {
-      clase: 'opcion',
-      texto,
-      atributos: { type: 'button' },
-      al: {
-        click: async (e) => {
-          const boton = e.currentTarget;
-          const previo = boton.textContent;
-          boton.disabled = true;
-          boton.textContent = 'Preparando…';
-          try { await fn(); } catch (err) {
-            avisoError(err.amable ? err.message : traducirError(err));
-          } finally {
-            boton.disabled = false;
-            boton.textContent = previo;
-          }
-        }
-      }
-    }));
-  });
-
-  caja.appendChild(botones);
-  return caja;
-}
-
-/** Trae SheetJS solo cuando de verdad se va a exportar. */
-async function cargarExcel() {
-  if (window.XLSX) return window.XLSX;
-
-  await new Promise((resolver, rechazar) => {
-    const script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js';
-    script.onload = resolver;
-    script.onerror = () => rechazar(new Error('No se pudo cargar la librería de Excel'));
-    document.head.appendChild(script);
-  });
-
-  if (!window.XLSX) throw new Error('No se pudo cargar la librería de Excel');
-  return window.XLSX;
-}
-
-async function descargar(nombreArchivo, hojas) {
-  const XLSX = await cargarExcel();
+// ---------------------------------------------------------------------------
+function descargar(filas, nombreHoja, archivo) {
+  const hoja = XLSX.utils.json_to_sheet(filas);
   const libro = XLSX.utils.book_new();
-  hojas.forEach(({ nombre, filas }) => {
-    XLSX.utils.book_append_sheet(libro, XLSX.utils.json_to_sheet(filas), nombre.slice(0, 31));
-  });
-  XLSX.writeFile(libro, nombreArchivo);
-  aviso('Archivo descargado');
+  XLSX.utils.book_append_sheet(libro, hoja, nombreHoja);
+  XLSX.writeFile(libro, archivo);
+  avisar('Archivo descargado', 'exito');
 }
 
-async function exportarVentas() {
-  const filas = await traerHistorial({ desde, hasta, limite: 5000 });
-
-  const hoja = filas.map((r) => ({
+function exportarVentas(regs, desde, hasta) {
+  descargar(regs.map(r => ({
     Fecha: fechaCorta(r.fecha),
-    Hora: hora12(r.hora_ingreso, { vacio: '' }),
-    Estado: r.estado,
-    Cliente: r.clienteNombre || '',
-    Servicio: r.servicioNombre || '',
-    Srtas: unirMasajistas(r.nombresMasajistas).replace('—', ''),
-    'Precio referencial': Number(r.precio_referencial || 0),
-    Descuento: Number(r.descuento || 0),
-    Ajuste: Number(r.ajuste || 0),
-    'Precio cobrado': Number(r.precio_cobrado || 0),
-    'Forma de pago': Object.entries(r.pagos || {})
-      .map(([m, v]) => `${m} ${soles(v)}`).join(' + '),
-    'Monto efectivo': Number(r.pagos?.efectivo || 0),
-    'Monto tarjeta': Number(r.pagos?.tarjeta || 0),
-    'Monto yape': Number(r.pagos?.yape || 0),
-    Recibido: Number(r.dinero_recibido || 0),
-    Vuelto: Number(r.vuelto || 0),
+    Hora: hora12(r.hora_ingreso?.slice(0, 5)) || '',
+    Cliente: r.cliente?.nombre || r.cliente_texto || '',
+    Servicio: r.servicio?.nombre_completo || r.servicio_nombre_snapshot || '',
+    Masajista: (r.masajistas || []).map(m => m.masajista && !m.masajista.eliminada
+      ? `${m.masajista.nombre} ${m.masajista.apellido || ''}`.trim()
+      : m.masajista_nombre_snapshot).join(' | '),
+    'Precio referencial': numero(r.precio_referencial),
+    Descuento: numero(r.descuento),
+    'Precio cobrado': numero(r.precio_cobrado),
+    'Forma de pago': r.forma_pago || 'No registrado',
+    Vuelto: numero(r.vuelto),
     'Vuelto por': r.vuelto_metodo || '',
-    Motivo: r.motivo_descuento_texto || r.motivo_descuento || '',
-    Notas: r.notas || '',
-    'Registrado por': r.usuario?.nombre || ''
-  }));
-
-  await descargar(`adhamar-ventas-${desde}-a-${hasta}.xlsx`, [{ nombre: 'Ventas', filas: hoja }]);
+    Notas: r.notas || ''
+  })), 'Ventas', `ventas_${desde}_${hasta}.xlsx`);
 }
 
 async function exportarClientes() {
-  const filas = await traerClientes();
-  const hoja = filas.map((c) => ({
-    ID: c.id,
-    Nombre: c.nombre || '',
-    Teléfono: c.telefono || '',
-    VIP: c.vip ? 'Sí' : 'No',
-    'Fecha de registro': fechaCorta(c.created_at),
-    Visitas: Number(c.visitas || 0),
-    'Última visita': c.ultima_visita ? fechaCorta(c.ultima_visita) : '',
-    Observaciones: c.observaciones || ''
-  }));
-  await descargar('adhamar-clientes.xlsx', [{ nombre: 'Clientes', filas: hoja }]);
+  try {
+    const cs = await D.clientes();
+    descargar(cs.map(c => ({
+      ID: c.id, Nombre: c.nombre || '', Teléfono: c.telefono || '',
+      'Fecha de registro': fechaCorta(c.created_at?.slice(0, 10)),
+      Visitas: c.visitas, 'Última visita': c.ultima_visita ? fechaCorta(c.ultima_visita) : '',
+      VIP: c.vip ? 'Sí' : 'No', Observaciones: c.observaciones || ''
+    })), 'Clientes', `clientes_${hoy()}.xlsx`);
+  } catch (ex) { avisar(mensajeError(ex), 'error'); }
 }
 
-async function exportarAsistencia() {
-  const filas = await asistenciaPeriodo(desde, hasta);
-  const hoja = filas.map((a) => ({
-    Fecha: fechaCorta(a.fecha),
-    Srta: a.masajista?.nombre || '',
-    Estado: a.estado || '',
-    Ingreso: hora12(a.hora_ingreso, { vacio: '' }),
-    Salida: hora12(a.hora_salida, { vacio: '' }),
-    Observaciones: a.observaciones || ''
-  }));
-  await descargar(`adhamar-asistencia-${desde}-a-${hasta}.xlsx`, [{ nombre: 'Asistencia', filas: hoja }]);
-}
-
-async function exportarCierres() {
-  const filas = await traerCierres(desde, hasta);
-  const hoja = filas.map((c) => ({
-    Fecha: fechaCorta(c.fecha),
-    Servicios: Number(c.total_servicios || 0),
-    'Ventas referenciales': Number(c.ventas_referenciales || 0),
-    Descuentos: Number(c.descuentos || 0),
-    'Ventas reales': Number(c.ventas_reales || 0),
-    Efectivo: Number(c.total_efectivo || 0),
-    Tarjeta: Number(c.total_tarjeta || 0),
-    Yape: Number(c.total_yape || 0),
-    'Vuelto en efectivo': Number(c.total_vuelto_efectivo || 0),
-    'Vuelto por Yape': Number(c.total_vuelto_yape || 0),
-    'Fondo inicial': c.fondo_inicial === null ? '' : Number(c.fondo_inicial),
-    'Efectivo esperado': Number(c.efectivo_esperado || 0),
-    'Efectivo contado': Number(c.efectivo_contado || 0),
-    Diferencia: Number(c.diferencia || 0),
-    'Diferencia justificada': Number(c.diferencia_justificada || 0),
-    Retirado: Number(c.monto_retirado || 0),
-    'Caja fija dejada': Number(c.caja_fija_siguiente || 0),
-    Estado: c.estado || '',
-    Observaciones: c.observaciones || ''
-  }));
-  await descargar(`adhamar-cierres-${desde}-a-${hasta}.xlsx`, [{ nombre: 'Cierres', filas: hoja }]);
-}
-
-/** plural() se usa al informar cuántas filas se exportaron. */
-export function resumenExportacion(n) {
-  return plural(n, 'fila exportada', 'filas exportadas');
+async function exportarAsistencia(desde, hasta) {
+  try {
+    const as = await D.asistenciasRango(desde, hasta);
+    descargar(as.map(a => ({
+      Fecha: fechaCorta(a.fecha),
+      Masajista: `${a.masajista?.nombre || ''} ${a.masajista?.apellido || ''}`.trim(),
+      Estado: a.estado,
+      Entrada: hora12(a.hora_ingreso?.slice(0, 5)) || '',
+      Salida: hora12(a.hora_salida?.slice(0, 5)) || '',
+      Observaciones: a.observaciones || ''
+    })), 'Asistencia', `asistencia_${desde}_${hasta}.xlsx`);
+  } catch (ex) { avisar(mensajeError(ex), 'error'); }
 }
